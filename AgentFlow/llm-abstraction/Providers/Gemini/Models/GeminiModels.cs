@@ -22,6 +22,9 @@ namespace LLMAbstraction.Providers.Gemini.Models
 
         [JsonPropertyName("toolConfig")]
         public GeminiToolConfig? ToolConfig { get; set; }
+
+        [JsonPropertyName("safetySettings")]
+        public List<Dictionary<string, object>>? SafetySettings { get; set; }
     }
 
     /// <summary>
@@ -52,6 +55,12 @@ namespace LLMAbstraction.Providers.Gemini.Models
 
         [JsonPropertyName("functionResponse")]
         public GeminiFunctionResponse? FunctionResponse { get; set; }
+
+        [JsonPropertyName("fileData")]
+        public GeminiFileData? FileData { get; set; }
+
+        [JsonPropertyName("thoughtSignature")]
+        public string? ThoughtSignature { get; set; }
     }
 
     /// <summary>
@@ -67,6 +76,21 @@ namespace LLMAbstraction.Providers.Gemini.Models
     }
 
     /// <summary>
+    /// Gemini file data part.
+    /// </summary>
+    public class GeminiFileData
+    {
+        [JsonPropertyName("mimeType")]
+        public string MimeType { get; set; } = string.Empty;
+
+        [JsonPropertyName("fileUri")]
+        public string FileUri { get; set; } = string.Empty;
+
+        [JsonPropertyName("displayName")]
+        public string? DisplayName { get; set; }
+    }
+
+    /// <summary>
     /// Gemini Function Call
     /// </summary>
     public class GeminiFunctionCall
@@ -76,6 +100,9 @@ namespace LLMAbstraction.Providers.Gemini.Models
 
         [JsonPropertyName("args")]
         public Dictionary<string, object>? Args { get; set; }
+
+        [JsonPropertyName("id")]
+        public string? Id { get; set; }
     }
 
     /// <summary>
@@ -88,6 +115,9 @@ namespace LLMAbstraction.Providers.Gemini.Models
 
         [JsonPropertyName("response")]
         public Dictionary<string, object> Response { get; set; } = new();
+
+        [JsonPropertyName("id")]
+        public string? Id { get; set; }
     }
 
     /// <summary>
@@ -115,6 +145,27 @@ namespace LLMAbstraction.Providers.Gemini.Models
 
         [JsonPropertyName("responseSchema")]
         public Dictionary<string, object>? ResponseSchema { get; set; }
+
+        [JsonPropertyName("responseJsonSchema")]
+        public Dictionary<string, object>? ResponseJsonSchema { get; set; }
+
+        [JsonPropertyName("thinkingConfig")]
+        public GeminiThinkingConfig? ThinkingConfig { get; set; }
+    }
+
+    /// <summary>
+    /// Gemini thinking configuration.
+    /// </summary>
+    public class GeminiThinkingConfig
+    {
+        [JsonPropertyName("includeThoughts")]
+        public bool? IncludeThoughts { get; set; }
+
+        [JsonPropertyName("thinkingBudget")]
+        public int? ThinkingBudget { get; set; }
+
+        [JsonPropertyName("thinkingLevel")]
+        public string? ThinkingLevel { get; set; }
     }
 
     /// <summary>
@@ -157,6 +208,9 @@ namespace LLMAbstraction.Providers.Gemini.Models
     {
         [JsonPropertyName("mode")]
         public string Mode { get; set; } = "AUTO";  // AUTO, ANY, NONE
+
+        [JsonPropertyName("allowedFunctionNames")]
+        public List<string>? AllowedFunctionNames { get; set; }
     }
 
     /// <summary>
@@ -169,6 +223,15 @@ namespace LLMAbstraction.Providers.Gemini.Models
 
         [JsonPropertyName("usageMetadata")]
         public GeminiUsageMetadata? UsageMetadata { get; set; }
+
+        [JsonPropertyName("modelVersion")]
+        public string? ModelVersion { get; set; }
+
+        [JsonPropertyName("responseId")]
+        public string? ResponseId { get; set; }
+
+        [JsonPropertyName("promptFeedback")]
+        public Dictionary<string, object>? PromptFeedback { get; set; }
     }
 
     /// <summary>
@@ -214,5 +277,8 @@ namespace LLMAbstraction.Providers.Gemini.Models
 
         [JsonPropertyName("totalTokenCount")]
         public int TotalTokenCount { get; set; }
+
+        [JsonPropertyName("thoughtsTokenCount")]
+        public int? ThoughtsTokenCount { get; set; }
     }
 }

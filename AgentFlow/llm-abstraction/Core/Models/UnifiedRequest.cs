@@ -18,9 +18,19 @@ namespace LLMAbstraction.Core.Models
         public List<UnifiedMessage> Messages { get; set; } = new();
 
         /// <summary>
-        /// System instruction (separate from messages for Gemini/Claude compatibility)
+        /// Developer/system-level instructions for the model.
         /// </summary>
-        public string? System { get; set; }
+        public string? Instructions { get; set; }
+
+        /// <summary>
+        /// Backward-compatible alias for Instructions.
+        /// </summary>
+        [System.Obsolete("Use Instructions instead.")]
+        public string? System
+        {
+            get => Instructions;
+            set => Instructions = value;
+        }
 
         /// <summary>
         /// Generation parameters
@@ -43,6 +53,16 @@ namespace LLMAbstraction.Core.Models
     public ResponseFormat? ResponseFormat { get; set; }
 
     /// <summary>
+    /// Reasoning/thinking controls for models that support them.
+    /// </summary>
+    public ReasoningOptions? Reasoning { get; set; }
+
+    /// <summary>
+    /// Request metadata shared by providers when supported.
+    /// </summary>
+    public RequestMetadata? Metadata { get; set; }
+
+    /// <summary>
     /// Provider-specific options (escape hatch)
     /// </summary>
     public ProviderOptions? ProviderOptions { get; set; }
@@ -54,9 +74,19 @@ namespace LLMAbstraction.Core.Models
     public class GenerationParameters
     {
         /// <summary>
-        /// Maximum tokens to generate
+        /// Maximum tokens to include in the model output.
         /// </summary>
-        public int? MaxTokens { get; set; }
+        public int? MaxOutputTokens { get; set; }
+
+        /// <summary>
+        /// Backward-compatible alias for MaxOutputTokens.
+        /// </summary>
+        [System.Obsolete("Use MaxOutputTokens instead.")]
+        public int? MaxTokens
+        {
+            get => MaxOutputTokens;
+            set => MaxOutputTokens = value;
+        }
 
         /// <summary>
         /// Sampling temperature (0.0 to 2.0, provider-dependent)
@@ -92,6 +122,7 @@ namespace LLMAbstraction.Core.Models
         public string Name { get; set; } = string.Empty;
         public string Description { get; set; } = string.Empty;
         public Dictionary<string, object> Parameters { get; set; } = new();  // JSON Schema
+        public bool? Strict { get; set; }
     }
 
     /// <summary>
@@ -101,6 +132,7 @@ namespace LLMAbstraction.Core.Models
     {
         public ToolChoiceType Type { get; set; }
         public string? ToolName { get; set; }  // For specific tool selection
+        public bool? DisableParallelToolUse { get; set; }
     }
 
     public enum ToolChoiceType
@@ -158,6 +190,27 @@ namespace LLMAbstraction.Core.Models
         /// Whether to enforce strict schema validation
         /// </summary>
         public bool Strict { get; set; } = true;
+    }
+
+    /// <summary>
+    /// Reasoning/thinking controls that map to provider-specific options.
+    /// </summary>
+    public class ReasoningOptions
+    {
+        public bool? Enabled { get; set; }
+        public int? BudgetTokens { get; set; }
+        public string? Effort { get; set; }
+        public string? Summary { get; set; }
+        public bool? IncludeThoughts { get; set; }
+    }
+
+    /// <summary>
+    /// Request-level metadata.
+    /// </summary>
+    public class RequestMetadata
+    {
+        public string? UserId { get; set; }
+        public Dictionary<string, string>? Tags { get; set; }
     }
 
     /// <summary>

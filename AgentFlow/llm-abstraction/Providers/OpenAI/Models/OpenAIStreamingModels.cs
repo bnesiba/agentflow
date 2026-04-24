@@ -1,89 +1,45 @@
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace LLMAbstraction.Providers.OpenAI.Models
 {
     /// <summary>
-    /// OpenAI Streaming Response Chunk
+    /// Generic OpenAI Responses API streaming event.
     /// </summary>
-    public class OpenAIStreamChunk
+    public class OpenAIResponseStreamEvent
     {
-        [JsonPropertyName("id")]
-        public string Id { get; set; } = string.Empty;
+        [JsonPropertyName("type")]
+        public string Type { get; set; } = string.Empty;
 
-        [JsonPropertyName("object")]
-        public string Object { get; set; } = string.Empty;
+        [JsonPropertyName("response")]
+        public OpenAIResponse? Response { get; set; }
 
-        [JsonPropertyName("created")]
-        public long Created { get; set; }
+        [JsonPropertyName("response_id")]
+        public string? ResponseId { get; set; }
 
-        [JsonPropertyName("model")]
-        public string Model { get; set; } = string.Empty;
+        [JsonPropertyName("item_id")]
+        public string? ItemId { get; set; }
 
-        [JsonPropertyName("choices")]
-        public List<OpenAIStreamChoice> Choices { get; set; } = new();
-
-        [JsonPropertyName("usage")]
-        public OpenAIUsage? Usage { get; set; }
-    }
-
-    /// <summary>
-    /// OpenAI Stream Choice
-    /// </summary>
-    public class OpenAIStreamChoice
-    {
-        [JsonPropertyName("index")]
-        public int Index { get; set; }
+        [JsonPropertyName("output_index")]
+        public int? OutputIndex { get; set; }
 
         [JsonPropertyName("delta")]
-        public OpenAIDelta Delta { get; set; } = new();
+        public string? Delta { get; set; }
 
-        [JsonPropertyName("finish_reason")]
-        public string? FinishReason { get; set; }
-    }
+        [JsonPropertyName("text")]
+        public string? Text { get; set; }
 
-    /// <summary>
-    /// OpenAI Delta
-    /// </summary>
-    public class OpenAIDelta
-    {
-        [JsonPropertyName("role")]
-        public string? Role { get; set; }
-
-        [JsonPropertyName("content")]
-        public string? Content { get; set; }
-
-        [JsonPropertyName("tool_calls")]
-        public List<OpenAIToolCallDelta>? ToolCalls { get; set; }
-    }
-
-    /// <summary>
-    /// OpenAI Tool Call Delta
-    /// </summary>
-    public class OpenAIToolCallDelta
-    {
-        [JsonPropertyName("index")]
-        public int Index { get; set; }
-
-        [JsonPropertyName("id")]
-        public string? Id { get; set; }
-
-        [JsonPropertyName("type")]
-        public string? Type { get; set; }
-
-        [JsonPropertyName("function")]
-        public OpenAIFunctionDelta? Function { get; set; }
-    }
-
-    /// <summary>
-    /// OpenAI Function Delta
-    /// </summary>
-    public class OpenAIFunctionDelta
-    {
         [JsonPropertyName("name")]
         public string? Name { get; set; }
 
         [JsonPropertyName("arguments")]
         public string? Arguments { get; set; }
+
+        [JsonPropertyName("sequence_number")]
+        public int? SequenceNumber { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? ExtensionData { get; set; }
     }
 }

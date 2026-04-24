@@ -43,6 +43,12 @@ namespace LLMAbstraction.Providers.Claude.Models
 
         [JsonPropertyName("output_config")]
         public ClaudeOutputConfig? OutputConfig { get; set; }
+
+        [JsonPropertyName("thinking")]
+        public ClaudeThinkingConfig? Thinking { get; set; }
+
+        [JsonPropertyName("metadata")]
+        public ClaudeMetadata? Metadata { get; set; }
     }
 
     /// <summary>
@@ -70,6 +76,9 @@ namespace LLMAbstraction.Providers.Claude.Models
 
         [JsonPropertyName("input_schema")]
         public Dictionary<string, object> InputSchema { get; set; } = new();
+
+        [JsonPropertyName("strict")]
+        public bool? Strict { get; set; }
     }
 
     /// <summary>
@@ -118,6 +127,15 @@ namespace LLMAbstraction.Providers.Claude.Models
 
         [JsonPropertyName("input")]
         public Dictionary<string, object>? Input { get; set; }
+
+        [JsonPropertyName("thinking")]
+        public string? Thinking { get; set; }
+
+        [JsonPropertyName("signature")]
+        public string? Signature { get; set; }
+
+        [JsonPropertyName("data")]
+        public string? Data { get; set; }
     }
 
     /// <summary>
@@ -136,6 +154,12 @@ namespace LLMAbstraction.Providers.Claude.Models
 
         [JsonPropertyName("cache_read_input_tokens")]
         public int? CacheReadInputTokens { get; set; }
+
+        [JsonPropertyName("ephemeral_5m_input_tokens")]
+        public int? Ephemeral5mInputTokens { get; set; }
+
+        [JsonPropertyName("ephemeral_1h_input_tokens")]
+        public int? Ephemeral1hInputTokens { get; set; }
     }
 
     /// <summary>
@@ -157,5 +181,26 @@ namespace LLMAbstraction.Providers.Claude.Models
 
         [JsonPropertyName("schema")]
         public Dictionary<string, object>? Schema { get; set; }
+    }
+
+    /// <summary>
+    /// Claude thinking configuration.
+    /// </summary>
+    public class ClaudeThinkingConfig
+    {
+        [JsonPropertyName("type")]
+        public string Type { get; set; } = string.Empty;
+
+        [JsonPropertyName("budget_tokens")]
+        public int? BudgetTokens { get; set; }
+    }
+
+    /// <summary>
+    /// Claude request metadata.
+    /// </summary>
+    public class ClaudeMetadata
+    {
+        [JsonPropertyName("user_id")]
+        public string? UserId { get; set; }
     }
 }

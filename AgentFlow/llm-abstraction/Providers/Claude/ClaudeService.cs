@@ -58,7 +58,6 @@ namespace LLMAbstraction.Providers.Claude
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.Add("x-api-key", _apiKey);
             _httpClient.DefaultRequestHeaders.Add("anthropic-version", _apiVersion);
-            _httpClient.DefaultRequestHeaders.Add("content-type", "application/json");
         }
 
         public async Task<UnifiedResponse> GenerateAsync(
@@ -78,9 +77,14 @@ namespace LLMAbstraction.Providers.Claude
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
             // Make API call
-            var response = await _httpClient.PostAsync(
-                "/v1/messages", 
-                content, 
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+            {
+                Content = content
+            };
+            AddRequestSpecificHeaders(httpRequest, request);
+            var response = await _httpClient.SendAsync(
+                httpRequest,
+                HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
 
             // Handle errors
@@ -124,9 +128,14 @@ namespace LLMAbstraction.Providers.Claude
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
             // Make API call
-            var response = await _httpClient.PostAsync(
-                "/v1/messages",
-                content,
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+            {
+                Content = content
+            };
+            AddRequestSpecificHeaders(httpRequest, request);
+            var response = await _httpClient.SendAsync(
+                httpRequest,
+                HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
 
             // Handle errors
@@ -143,8 +152,8 @@ namespace LLMAbstraction.Providers.Claude
 
             string? messageId = null;
             string? model = null;
-            string? currentContent = null;
             FinishReason? finishReason = null;
+            var contentBlocks = new Dictionary<int, ClaudeContentBlock>();
 
             while (!reader.EndOfStream)
             {
@@ -169,6 +178,37 @@ namespace LLMAbstraction.Providers.Claude
                             model = messageStart?.Message?.Model;
                             break;
 
+                        case "content_block_start":
+                            var blockStart = JsonSerializer.Deserialize<ClaudeContentBlockStart>(data, jsonOptions);
+                            if (blockStart?.ContentBlock != null)
+                            {
+                                contentBlocks[blockStart.Index] = blockStart.ContentBlock;
+
+                                if (blockStart.ContentBlock.Type == "tool_use")
+                                {
+                                    yield return new StreamChunk
+                                    {
+                                        Id = messageId ?? string.Empty,
+                                        Model = model ?? string.Empty,
+                                        ChoiceIndex = 0,
+                                        Delta = new StreamDelta
+                                        {
+                                            ToolCalls = new List<ToolCallDelta>
+                                            {
+                                                new ToolCallDelta
+                                                {
+                                                    Index = blockStart.Index,
+                                                    Id = blockStart.ContentBlock.Id,
+                                                    Name = blockStart.ContentBlock.Name,
+                                                    Type = "tool_use"
+                                                }
+                                            }
+                                        }
+                                    };
+                                }
+                            }
+                            break;
+
                         case "content_block_delta":
                             var delta = JsonSerializer.Deserialize<ClaudeContentBlockDelta>(data, jsonOptions);
                             if (delta?.Delta?.Text != null)
@@ -181,6 +221,46 @@ namespace LLMAbstraction.Providers.Claude
                                     Delta = new StreamDelta
                                     {
                                         Content = delta.Delta.Text
+                                    }
+                                };
+                            }
+                            else if (delta?.Delta?.PartialJson != null)
+                            {
+                                contentBlocks.TryGetValue(delta.Index, out var block);
+                                yield return new StreamChunk
+                                {
+                                    Id = messageId ?? string.Empty,
+                                    Model = model ?? string.Empty,
+                                    ChoiceIndex = 0,
+                                    Delta = new StreamDelta
+                                    {
+                                        ToolCalls = new List<ToolCallDelta>
+                                        {
+                                            new ToolCallDelta
+                                            {
+                                                Index = delta.Index,
+                                                Id = block?.Id,
+                                                Name = block?.Name,
+                                                Arguments = delta.Delta.PartialJson,
+                                                Type = "tool_use"
+                                            }
+                                        }
+                                    }
+                                };
+                            }
+                            else if (delta?.Delta?.Thinking != null || delta?.Delta?.Signature != null)
+                            {
+                                yield return new StreamChunk
+                                {
+                                    Id = messageId ?? string.Empty,
+                                    Model = model ?? string.Empty,
+                                    ChoiceIndex = 0,
+                                    Delta = new StreamDelta(),
+                                    ProviderMetadata = new Dictionary<string, object>
+                                    {
+                                        { "claude.deltaType", delta.Delta.Type },
+                                        { "claude.thinking", delta.Delta.Thinking ?? string.Empty },
+                                        { "claude.signature", delta.Delta.Signature ?? string.Empty }
                                     }
                                 };
                             }
@@ -208,8 +288,8 @@ namespace LLMAbstraction.Providers.Claude
                                     FinishReason = finishReason,
                                     Usage = messageDelta.Usage != null ? new UsageInfo
                                     {
-                                        PromptTokens = messageDelta.Usage.InputTokens,
-                                        CompletionTokens = messageDelta.Usage.OutputTokens,
+                                        InputTokens = messageDelta.Usage.InputTokens,
+                                        OutputTokens = messageDelta.Usage.OutputTokens,
                                         TotalTokens = messageDelta.Usage.InputTokens + messageDelta.Usage.OutputTokens
                                     } : null
                                 };
@@ -218,6 +298,41 @@ namespace LLMAbstraction.Providers.Claude
                     }
                 }
             }
+        }
+
+        private static void AddRequestSpecificHeaders(HttpRequestMessage httpRequest, UnifiedRequest request)
+        {
+            if (request.ProviderOptions?.Claude != null &&
+                request.ProviderOptions.Claude.TryGetValue("anthropicBeta", out var betaValue))
+            {
+                if (betaValue is string betaHeader && !string.IsNullOrWhiteSpace(betaHeader))
+                {
+                    httpRequest.Headers.TryAddWithoutValidation("anthropic-beta", betaHeader);
+                    return;
+                }
+            }
+
+            if (UsesClaudeFileId(request.Messages))
+            {
+                httpRequest.Headers.TryAddWithoutValidation("anthropic-beta", "files-api-2025-04-14");
+            }
+        }
+
+        private static bool UsesClaudeFileId(List<UnifiedMessage> messages)
+        {
+            foreach (var message in messages)
+            {
+                foreach (var block in message.Content)
+                {
+                    if (block is MediaContent media &&
+                        !string.IsNullOrEmpty(media.Source.FileId))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
     }
 }

@@ -17,14 +17,18 @@ namespace LLMAbstraction.Providers.Claude
             var claudeRequest = new ClaudeMessageRequest
             {
                 Model = request.Model,
-                MaxTokens = request.Parameters.MaxTokens ?? 1024, // Claude requires max_tokens
+                MaxTokens = request.Parameters.MaxOutputTokens ?? 1024, // Claude requires max_tokens
                 Messages = ConvertMessages(request.Messages),
-                System = request.System,
+                System = request.Instructions,
                 Temperature = request.Parameters.Temperature,
                 TopP = request.Parameters.TopP,
                 TopK = request.Parameters.TopK,
                 StopSequences = request.Parameters.StopSequences,
-                Stream = request.Parameters.Stream
+                Stream = request.Parameters.Stream,
+                Thinking = ConvertReasoning(request.Reasoning),
+                Metadata = request.Metadata?.UserId != null
+                    ? new ClaudeMetadata { UserId = request.Metadata.UserId }
+                    : null
             };
 
             // Convert tools if present
@@ -60,8 +64,8 @@ namespace LLMAbstraction.Providers.Claude
                 },
                 Usage = new UsageInfo
                 {
-                    PromptTokens = response.Usage.InputTokens,
-                    CompletionTokens = response.Usage.OutputTokens,
+                    InputTokens = response.Usage.InputTokens,
+                    OutputTokens = response.Usage.OutputTokens,
                     TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens,
                     CacheCreationTokens = response.Usage.CacheCreationInputTokens,
                     CacheReadTokens = response.Usage.CacheReadInputTokens
@@ -150,6 +154,10 @@ namespace LLMAbstraction.Providers.Claude
                         }
                         break;
 
+                    case MediaContent media:
+                        blocks.Add(ConvertMediaContent(media));
+                        break;
+
                     case ToolCallContent toolCall:
                         blocks.Add(new
                         {
@@ -175,13 +183,58 @@ namespace LLMAbstraction.Providers.Claude
             return blocks;
         }
 
+        private static object ConvertMediaContent(MediaContent media)
+        {
+            var contentType = media.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
+                ? "image"
+                : "document";
+
+            if (!string.IsNullOrEmpty(media.Source.FileId))
+            {
+                return new
+                {
+                    type = contentType,
+                    source = new
+                    {
+                        type = "file",
+                        file_id = media.Source.FileId
+                    }
+                };
+            }
+
+            if (!string.IsNullOrEmpty(media.Source.Url) || !string.IsNullOrEmpty(media.Source.FileUri))
+            {
+                return new
+                {
+                    type = contentType,
+                    source = new
+                    {
+                        type = "url",
+                        url = media.Source.Url ?? media.Source.FileUri
+                    }
+                };
+            }
+
+            return new
+            {
+                type = contentType,
+                source = new
+                {
+                    type = "base64",
+                    media_type = media.MediaType,
+                    data = media.Source.Base64Data ?? string.Empty
+                }
+            };
+        }
+
         private ClaudeTool ConvertTool(ToolDefinition tool)
         {
             return new ClaudeTool
             {
                 Name = tool.Name,
                 Description = tool.Description,
-                InputSchema = tool.Parameters
+                InputSchema = tool.Parameters,
+                Strict = tool.Strict
             };
         }
 
@@ -227,6 +280,11 @@ namespace LLMAbstraction.Providers.Claude
                         Input = block.Input ?? new Dictionary<string, object>()
                     });
                 }
+                else if (block.Type == "thinking" || block.Type == "redacted_thinking")
+                {
+                    message.ProviderMetadata ??= new Dictionary<string, object>();
+                    message.ProviderMetadata[$"claude.{block.Type}"] = block;
+                }
             }
 
             return message;
@@ -242,7 +300,12 @@ namespace LLMAbstraction.Providers.Claude
             switch (responseFormat.Type)
             {
                 case ResponseFormatType.Json:
-                    outputConfig.Format.Type = "json";
+                    outputConfig.Format.Type = "json_schema";
+                    outputConfig.Format.Schema = new Dictionary<string, object>
+                    {
+                        { "type", "object" },
+                        { "additionalProperties", true }
+                    };
                     break;
 
                 case ResponseFormatType.JsonSchema:
@@ -255,6 +318,34 @@ namespace LLMAbstraction.Providers.Claude
             }
 
             return outputConfig;
+        }
+
+        private static ClaudeThinkingConfig? ConvertReasoning(ReasoningOptions? reasoning)
+        {
+            if (reasoning == null)
+                return null;
+
+            if (reasoning.Enabled == false)
+            {
+                return new ClaudeThinkingConfig { Type = "disabled" };
+            }
+
+            if (reasoning.BudgetTokens != null)
+            {
+                return new ClaudeThinkingConfig
+                {
+                    Type = "enabled",
+                    BudgetTokens = reasoning.BudgetTokens
+                };
+            }
+
+            if (!string.IsNullOrEmpty(reasoning.Effort) &&
+                reasoning.Effort.Equals("adaptive", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ClaudeThinkingConfig { Type = "adaptive" };
+            }
+
+            return null;
         }
 
         private FinishReason ConvertFinishReason(string? reason)

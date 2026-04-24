@@ -22,6 +22,7 @@ namespace LLMAbstraction.Core.Models
     {
         public MessageRole Role { get; set; }
         public List<ContentBlock> Content { get; set; } = new();
+        public Dictionary<string, object>? ProviderMetadata { get; set; }
 
         // Convenience constructor for simple text messages
         public UnifiedMessage(MessageRole role, string text)
@@ -48,6 +49,7 @@ namespace LLMAbstraction.Core.Models
     public abstract class ContentBlock
     {
         public abstract string Type { get; }
+        public Dictionary<string, object>? ProviderMetadata { get; set; }
     }
 
     /// <summary>
@@ -69,6 +71,16 @@ namespace LLMAbstraction.Core.Models
     }
 
     /// <summary>
+    /// Generic media content block for providers that support files, images, audio, or documents.
+    /// </summary>
+    public class MediaContent : ContentBlock
+    {
+        public override string Type => "media";
+        public string MediaType { get; set; } = string.Empty;
+        public MediaSource Source { get; set; } = new();
+    }
+
+    /// <summary>
     /// Image source (base64 or URL)
     /// </summary>
     public class ImageSource
@@ -76,6 +88,18 @@ namespace LLMAbstraction.Core.Models
         public string? MediaType { get; set; }
         public string? Data { get; set; }  // Base64 encoded
         public string? Url { get; set; }
+    }
+
+    /// <summary>
+    /// Media source for inline data, URLs, and provider-hosted files.
+    /// </summary>
+    public class MediaSource
+    {
+        public string? Url { get; set; }
+        public string? Base64Data { get; set; }
+        public string? FileId { get; set; }
+        public string? FileUri { get; set; }
+        public string? FileName { get; set; }
     }
 
     /// <summary>
@@ -96,7 +120,8 @@ namespace LLMAbstraction.Core.Models
     {
         public override string Type => "tool_result";
         public string ToolCallId { get; set; } = string.Empty;
-        public string Output { get; set; } = string.Empty;
+        public string? ToolName { get; set; }
+        public object? Output { get; set; } = string.Empty;
         public bool? IsError { get; set; }
     }
 }

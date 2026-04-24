@@ -19,22 +19,23 @@ namespace LLMAbstraction.Providers.Gemini
                 Contents = ConvertMessages(request.Messages),
                 GenerationConfig = new GeminiGenerationConfig
                 {
-                    MaxOutputTokens = request.Parameters.MaxTokens,
+                    MaxOutputTokens = request.Parameters.MaxOutputTokens,
                     Temperature = request.Parameters.Temperature,
                     TopP = request.Parameters.TopP,
                     TopK = request.Parameters.TopK,
-                    StopSequences = request.Parameters.StopSequences
+                    StopSequences = request.Parameters.StopSequences,
+                    ThinkingConfig = ConvertReasoning(request.Reasoning)
                 }
             };
 
             // Add system instruction if present
-            if (!string.IsNullOrEmpty(request.System))
+            if (!string.IsNullOrEmpty(request.Instructions))
             {
                 geminiRequest.SystemInstruction = new GeminiContent
                 {
                     Parts = new List<GeminiPart>
                     {
-                        new GeminiPart { Text = request.System }
+                        new GeminiPart { Text = request.Instructions }
                     }
                 };
             }
@@ -57,6 +58,13 @@ namespace LLMAbstraction.Providers.Gemini
             if (request.ResponseFormat != null)
             {
                 ConvertResponseFormat(geminiRequest, request.ResponseFormat);
+            }
+
+            if (request.ProviderOptions?.Gemini != null &&
+                request.ProviderOptions.Gemini.TryGetValue("safetySettings", out var safetySettings) &&
+                safetySettings is List<Dictionary<string, object>> typedSafetySettings)
+            {
+                geminiRequest.SafetySettings = typedSafetySettings;
             }
 
             return geminiRequest;
@@ -82,15 +90,19 @@ namespace LLMAbstraction.Providers.Gemini
 
             return new UnifiedResponse
             {
-                Id = Guid.NewGuid().ToString(), // Gemini doesn't provide ID
-                Model = string.Empty, // Model info not in response
+                Id = response.ResponseId ?? Guid.NewGuid().ToString(),
+                Model = response.ModelVersion ?? string.Empty,
                 Choices = choices,
                 Usage = new UsageInfo
                 {
-                    PromptTokens = response.UsageMetadata?.PromptTokenCount ?? 0,
-                    CompletionTokens = response.UsageMetadata?.CandidatesTokenCount ?? 0,
-                    TotalTokens = response.UsageMetadata?.TotalTokenCount ?? 0
-                }
+                    InputTokens = response.UsageMetadata?.PromptTokenCount ?? 0,
+                    OutputTokens = response.UsageMetadata?.CandidatesTokenCount ?? 0,
+                    TotalTokens = response.UsageMetadata?.TotalTokenCount ?? 0,
+                    ReasoningTokens = response.UsageMetadata?.ThoughtsTokenCount
+                },
+                ProviderMetadata = response.PromptFeedback != null
+                    ? new Dictionary<string, object> { { "promptFeedback", response.PromptFeedback } }
+                    : null
             };
         }
 
@@ -151,15 +163,22 @@ namespace LLMAbstraction.Providers.Gemini
                         // Note: Gemini doesn't support URL-based images directly
                         break;
 
+                    case MediaContent media:
+                        AddMediaPart(parts, media);
+                        break;
+
                     case ToolCallContent toolCall:
-                        parts.Add(new GeminiPart
+                        var toolCallPart = new GeminiPart
                         {
                             FunctionCall = new GeminiFunctionCall
                             {
+                                Id = toolCall.Id,
                                 Name = toolCall.Name,
                                 Args = toolCall.Input
                             }
-                        });
+                        };
+                        ApplyGeminiProviderMetadata(toolCallPart, toolCall.ProviderMetadata);
+                        parts.Add(toolCallPart);
                         break;
 
                     case ToolResultContent toolResult:
@@ -167,11 +186,9 @@ namespace LLMAbstraction.Providers.Gemini
                         {
                             FunctionResponse = new GeminiFunctionResponse
                             {
-                                Name = toolResult.ToolCallId, // Use ID as name
-                                Response = new Dictionary<string, object>
-                                {
-                                    { "result", toolResult.Output }
-                                }
+                                Name = toolResult.ToolName ?? toolResult.ToolCallId,
+                                Id = toolResult.ToolCallId,
+                                Response = ConvertToolResultOutput(toolResult.Output)
                             }
                         });
                         break;
@@ -201,17 +218,27 @@ namespace LLMAbstraction.Providers.Gemini
                 ToolChoiceType.Auto => "AUTO",
                 ToolChoiceType.None => "NONE",
                 ToolChoiceType.Required => "ANY",
-                ToolChoiceType.Specific => "ANY", // Gemini doesn't support specific tool selection
+                ToolChoiceType.Specific => "ANY",
                 _ => "AUTO"
             };
 
-            return new GeminiToolConfig
+            var config = new GeminiToolConfig
             {
                 FunctionCallingConfig = new GeminiFunctionCallingConfig
                 {
                     Mode = mode
                 }
             };
+
+            if (toolChoice.Type == ToolChoiceType.Specific && !string.IsNullOrEmpty(toolChoice.ToolName))
+            {
+                config.FunctionCallingConfig.AllowedFunctionNames = new List<string>
+                {
+                    toolChoice.ToolName
+                };
+            }
+
+            return config;
         }
 
         private UnifiedMessage ConvertContent(GeminiContent content)
@@ -232,12 +259,21 @@ namespace LLMAbstraction.Providers.Gemini
                     }
                     else if (part.FunctionCall != null)
                     {
-                        message.Content.Add(new ToolCallContent
+                        var toolCall = new ToolCallContent
                         {
-                            Id = Guid.NewGuid().ToString(), // Generate ID
+                            Id = part.FunctionCall.Id ?? Guid.NewGuid().ToString(),
                             Name = part.FunctionCall.Name,
                             Input = part.FunctionCall.Args ?? new Dictionary<string, object>()
-                        });
+                        };
+                        if (!string.IsNullOrEmpty(part.ThoughtSignature))
+                        {
+                            toolCall.ProviderMetadata = new Dictionary<string, object>
+                            {
+                                { "gemini.thoughtSignature", part.ThoughtSignature }
+                            };
+                        }
+
+                        message.Content.Add(toolCall);
                     }
                 }
             }
@@ -261,10 +297,84 @@ namespace LLMAbstraction.Providers.Gemini
                     request.GenerationConfig.ResponseMimeType = "application/json";
                     if (responseFormat.JsonSchema != null)
                     {
-                        request.GenerationConfig.ResponseSchema = responseFormat.JsonSchema.Schema;
+                        request.GenerationConfig.ResponseJsonSchema = responseFormat.JsonSchema.Schema;
                     }
                     break;
             }
+        }
+
+        private static GeminiThinkingConfig? ConvertReasoning(ReasoningOptions? reasoning)
+        {
+            if (reasoning == null)
+                return null;
+
+            var config = new GeminiThinkingConfig
+            {
+                IncludeThoughts = reasoning.IncludeThoughts,
+                ThinkingBudget = reasoning.Enabled == false ? 0 : reasoning.BudgetTokens
+            };
+
+            if (!string.IsNullOrEmpty(reasoning.Effort))
+            {
+                config.ThinkingLevel = reasoning.Effort.ToUpperInvariant();
+            }
+
+            return config;
+        }
+
+        private static void AddMediaPart(List<GeminiPart> parts, MediaContent media)
+        {
+            if (!string.IsNullOrEmpty(media.Source.Base64Data))
+            {
+                parts.Add(new GeminiPart
+                {
+                    InlineData = new GeminiInlineData
+                    {
+                        MimeType = media.MediaType,
+                        Data = media.Source.Base64Data
+                    }
+                });
+                return;
+            }
+
+            var fileUri = media.Source.FileUri ?? media.Source.Url;
+            if (!string.IsNullOrEmpty(fileUri))
+            {
+                parts.Add(new GeminiPart
+                {
+                    FileData = new GeminiFileData
+                    {
+                        MimeType = media.MediaType,
+                        FileUri = fileUri,
+                        DisplayName = media.Source.FileName
+                    }
+                });
+            }
+        }
+
+        private static void ApplyGeminiProviderMetadata(
+            GeminiPart part,
+            Dictionary<string, object>? providerMetadata)
+        {
+            if (providerMetadata == null)
+                return;
+
+            if (providerMetadata.TryGetValue("gemini.thoughtSignature", out var signature) &&
+                signature is string signatureText)
+            {
+                part.ThoughtSignature = signatureText;
+            }
+        }
+
+        private static Dictionary<string, object> ConvertToolResultOutput(object? output)
+        {
+            if (output is Dictionary<string, object> dictionary)
+                return dictionary;
+
+            return new Dictionary<string, object>
+            {
+                { "result", output ?? string.Empty }
+            };
         }
 
         private FinishReason ConvertFinishReason(string? reason)

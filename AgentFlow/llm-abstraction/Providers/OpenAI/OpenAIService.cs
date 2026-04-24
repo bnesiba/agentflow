@@ -15,7 +15,7 @@ using LLMAbstraction.Providers.OpenAI.Models;
 namespace LLMAbstraction.Providers.OpenAI
 {
     /// <summary>
-    /// Service for interacting with OpenAI API
+    /// Service for interacting with the OpenAI Responses API.
     /// </summary>
     public class OpenAIService : ILLMService
     {
@@ -29,12 +29,12 @@ namespace LLMAbstraction.Providers.OpenAI
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
             _baseUrl = baseUrl ?? "https://api.openai.com/v1";
             _converter = new OpenAIConverter();
-            
+
             _httpClient = new HttpClient
             {
                 BaseAddress = new Uri(_baseUrl)
             };
-            _httpClient.DefaultRequestHeaders.Authorization = 
+            _httpClient.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", _apiKey);
         }
 
@@ -47,34 +47,26 @@ namespace LLMAbstraction.Providers.OpenAI
 
             if (_httpClient.DefaultRequestHeaders.Authorization == null)
             {
-                _httpClient.DefaultRequestHeaders.Authorization = 
+                _httpClient.DefaultRequestHeaders.Authorization =
                     new AuthenticationHeaderValue("Bearer", _apiKey);
             }
         }
 
         public async Task<UnifiedResponse> GenerateAsync(
-            UnifiedRequest request, 
+            UnifiedRequest request,
             CancellationToken cancellationToken = default)
         {
-            // Convert unified request to OpenAI format
             var openAIRequest = _converter.ConvertRequest(request);
 
-            // Serialize request
-            var jsonOptions = new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
-            };
+            var jsonOptions = CreateJsonOptions();
             var jsonContent = JsonSerializer.Serialize(openAIRequest, jsonOptions);
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
-            // Make API call
             var response = await _httpClient.PostAsync(
-                "/chat/completions", 
-                content, 
+                "/responses",
+                content,
                 cancellationToken);
 
-            // Handle errors
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -82,10 +74,9 @@ namespace LLMAbstraction.Providers.OpenAI
                     $"OpenAI API request failed with status {response.StatusCode}: {errorContent}");
             }
 
-            // Parse response
             var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
-            var openAIResponse = JsonSerializer.Deserialize<OpenAIChatResponse>(
-                responseJson, 
+            var openAIResponse = JsonSerializer.Deserialize<OpenAIResponse>(
+                responseJson,
                 jsonOptions);
 
             if (openAIResponse == null)
@@ -93,7 +84,6 @@ namespace LLMAbstraction.Providers.OpenAI
                 throw new InvalidOperationException("Failed to deserialize OpenAI response");
             }
 
-            // Convert to unified format
             return _converter.ConvertResponse(openAIResponse);
         }
 
@@ -101,26 +91,22 @@ namespace LLMAbstraction.Providers.OpenAI
             UnifiedRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            // Convert unified request to OpenAI format and enable streaming
             var openAIRequest = _converter.ConvertRequest(request);
             openAIRequest.Stream = true;
 
-            // Serialize request
-            var jsonOptions = new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
-            };
+            var jsonOptions = CreateJsonOptions();
             var jsonContent = JsonSerializer.Serialize(openAIRequest, jsonOptions);
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
-            // Make API call
-            var response = await _httpClient.PostAsync(
-                "/chat/completions",
-                content,
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/responses")
+            {
+                Content = content
+            };
+            var response = await _httpClient.SendAsync(
+                httpRequest,
+                HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
 
-            // Handle errors
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -128,7 +114,6 @@ namespace LLMAbstraction.Providers.OpenAI
                     $"OpenAI API request failed with status {response.StatusCode}: {errorContent}");
             }
 
-            // Stream response
             using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var reader = new StreamReader(stream);
 
@@ -138,82 +123,158 @@ namespace LLMAbstraction.Providers.OpenAI
                 if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
                     continue;
 
-                var data = line.Substring(6); // Remove "data: " prefix
+                var data = line.Substring(6);
                 if (data == "[DONE]")
                     break;
 
-                OpenAIStreamChunk? chunk;
+                OpenAIResponseStreamEvent? streamEvent;
                 try
                 {
-                    chunk = JsonSerializer.Deserialize<OpenAIStreamChunk>(data, jsonOptions);
+                    streamEvent = JsonSerializer.Deserialize<OpenAIResponseStreamEvent>(data, jsonOptions);
                 }
                 catch
                 {
-                    continue; // Skip malformed chunks
+                    continue;
                 }
 
-                if (chunk?.Choices == null || chunk.Choices.Count == 0)
+                if (streamEvent == null)
                     continue;
 
-                // Convert to unified format
-                foreach (var choice in chunk.Choices)
+                var converted = ConvertStreamEvent(streamEvent);
+                if (converted != null)
                 {
-                    yield return ConvertStreamChunk(chunk, choice);
+                    yield return converted;
                 }
             }
         }
 
-        private StreamChunk ConvertStreamChunk(OpenAIStreamChunk chunk, OpenAIStreamChoice choice)
+        private static JsonSerializerOptions CreateJsonOptions()
         {
-            var delta = new StreamDelta
+            return new JsonSerializerOptions
             {
-                Role = choice.Delta.Role switch
-                {
-                    "assistant" => MessageRole.Assistant,
-                    "user" => MessageRole.User,
-                    "system" => MessageRole.System,
-                    _ => null
-                },
-                Content = choice.Delta.Content
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
             };
+        }
 
-            // Convert tool calls if present
-            if (choice.Delta.ToolCalls != null)
+        private static StreamChunk? ConvertStreamEvent(OpenAIResponseStreamEvent streamEvent)
+        {
+            switch (streamEvent.Type)
             {
-                delta.ToolCalls = new List<ToolCallDelta>();
-                foreach (var toolCall in choice.Delta.ToolCalls)
-                {
-                    delta.ToolCalls.Add(new ToolCallDelta
+                case "response.output_text.delta":
+                    return new StreamChunk
                     {
-                        Index = toolCall.Index,
-                        Id = toolCall.Id,
-                        Name = toolCall.Function?.Name,
-                        Arguments = toolCall.Function?.Arguments
-                    });
-                }
+                        Id = streamEvent.ResponseId ?? streamEvent.Response?.Id ?? string.Empty,
+                        Model = streamEvent.Response?.Model ?? string.Empty,
+                        ChoiceIndex = streamEvent.OutputIndex ?? 0,
+                        Delta = new StreamDelta
+                        {
+                            Content = streamEvent.Delta
+                        }
+                    };
+
+                case "response.function_call_arguments.delta":
+                    return new StreamChunk
+                    {
+                        Id = streamEvent.ResponseId ?? string.Empty,
+                        ChoiceIndex = streamEvent.OutputIndex ?? 0,
+                        Delta = new StreamDelta
+                        {
+                            ToolCalls = new List<ToolCallDelta>
+                            {
+                                new ToolCallDelta
+                                {
+                                    Index = streamEvent.OutputIndex ?? 0,
+                                    Id = streamEvent.ItemId,
+                                    Arguments = streamEvent.Delta,
+                                    Type = "function"
+                                }
+                            }
+                        }
+                    };
+
+                case "response.function_call_arguments.done":
+                    return new StreamChunk
+                    {
+                        Id = streamEvent.ResponseId ?? string.Empty,
+                        ChoiceIndex = streamEvent.OutputIndex ?? 0,
+                        Delta = new StreamDelta
+                        {
+                            ToolCalls = new List<ToolCallDelta>
+                            {
+                                new ToolCallDelta
+                                {
+                                    Index = streamEvent.OutputIndex ?? 0,
+                                    Id = streamEvent.ItemId,
+                                    Name = streamEvent.Name,
+                                    Arguments = streamEvent.Arguments,
+                                    Type = "function"
+                                }
+                            }
+                        }
+                    };
+
+                case "response.completed":
+                case "response.incomplete":
+                    return new StreamChunk
+                    {
+                        Id = streamEvent.Response?.Id ?? streamEvent.ResponseId ?? string.Empty,
+                        Model = streamEvent.Response?.Model ?? string.Empty,
+                        ChoiceIndex = 0,
+                        Delta = new StreamDelta(),
+                        FinishReason = streamEvent.Response != null
+                            ? ConvertFinishReason(streamEvent.Response)
+                            : FinishReason.Stop,
+                        Usage = streamEvent.Response?.Usage != null ? ConvertUsage(streamEvent.Response.Usage) : null
+                    };
+
+                case "response.failed":
+                    return new StreamChunk
+                    {
+                        Id = streamEvent.Response?.Id ?? streamEvent.ResponseId ?? string.Empty,
+                        Model = streamEvent.Response?.Model ?? string.Empty,
+                        ChoiceIndex = 0,
+                        Delta = new StreamDelta(),
+                        FinishReason = FinishReason.Error,
+                        Usage = streamEvent.Response?.Usage != null ? ConvertUsage(streamEvent.Response.Usage) : null
+                    };
+
+                default:
+                    return null;
+            }
+        }
+
+        private static UsageInfo ConvertUsage(OpenAIResponseUsage usage)
+        {
+            return new UsageInfo
+            {
+                InputTokens = usage.InputTokens,
+                OutputTokens = usage.OutputTokens,
+                TotalTokens = usage.TotalTokens,
+                CacheReadTokens = usage.InputTokenDetails?.CachedTokens,
+                ReasoningTokens = usage.OutputTokenDetails?.ReasoningTokens
+            };
+        }
+
+        private static FinishReason ConvertFinishReason(OpenAIResponse response)
+        {
+            if (response.Output.Exists(item => item.Type == "function_call"))
+                return FinishReason.ToolCalls;
+
+            if (response.Status == "incomplete")
+            {
+                return response.IncompleteDetails?.Reason switch
+                {
+                    "max_output_tokens" => FinishReason.MaxTokens,
+                    "content_filter" => FinishReason.ContentFilter,
+                    _ => FinishReason.Other
+                };
             }
 
-            return new StreamChunk
-            {
-                Id = chunk.Id,
-                Model = chunk.Model,
-                ChoiceIndex = choice.Index,
-                Delta = delta,
-                FinishReason = choice.FinishReason switch
-                {
-                    "stop" => FinishReason.Stop,
-                    "length" => FinishReason.MaxTokens,
-                    "tool_calls" => FinishReason.ToolCalls,
-                    "content_filter" => FinishReason.ContentFilter,
-                    _ => null
-                },
-                Usage = chunk.Usage != null ? new UsageInfo
-                {
-                    PromptTokens = chunk.Usage.PromptTokens,
-                    CompletionTokens = chunk.Usage.CompletionTokens,
-                    TotalTokens = chunk.Usage.TotalTokens
-                } : null
-            };
+            if (response.Error != null)
+                return FinishReason.Error;
+
+            return FinishReason.Stop;
         }
     }
 }

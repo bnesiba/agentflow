@@ -113,10 +113,14 @@ namespace LLMAbstraction.Providers.Gemini
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
             // Use streaming endpoint
-            var endpoint = $"/models/{request.Model}:streamGenerateContent?key={_apiKey}";
-            var response = await _httpClient.PostAsync(
-                endpoint,
-                content,
+            var endpoint = $"/models/{request.Model}:streamGenerateContent?alt=sse&key={_apiKey}";
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint)
+            {
+                Content = content
+            };
+            var response = await _httpClient.SendAsync(
+                httpRequest,
+                HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
 
             // Handle errors
@@ -127,26 +131,25 @@ namespace LLMAbstraction.Providers.Gemini
                     $"Gemini API request failed with status {response.StatusCode}: {errorContent}");
             }
 
-            // Stream response (Gemini uses JSON array streaming)
+            // Stream response as server-sent events.
             using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var reader = new StreamReader(stream);
 
-            var buffer = new StringBuilder();
             while (!reader.EndOfStream)
             {
                 var line = await reader.ReadLineAsync();
-                if (string.IsNullOrWhiteSpace(line))
+                if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
                     continue;
 
-                // Gemini streams JSON objects separated by newlines
+                var data = line.Substring(6);
                 GeminiStreamChunk? chunk;
                 try
                 {
-                    chunk = JsonSerializer.Deserialize<GeminiStreamChunk>(line, jsonOptions);
+                    chunk = JsonSerializer.Deserialize<GeminiStreamChunk>(data, jsonOptions);
                 }
                 catch
                 {
-                    continue; // Skip malformed chunks
+                    continue;
                 }
 
                 if (chunk?.Candidates == null || chunk.Candidates.Count == 0)
@@ -179,7 +182,7 @@ namespace LLMAbstraction.Providers.Gemini
 
             return new StreamChunk
             {
-                Id = Guid.NewGuid().ToString(), // Gemini doesn't provide chunk IDs
+                Id = chunk.ModelVersion ?? Guid.NewGuid().ToString(),
                 Model = model,
                 ChoiceIndex = candidate.Index,
                 Delta = delta,
@@ -193,9 +196,10 @@ namespace LLMAbstraction.Providers.Gemini
                 },
                 Usage = chunk.UsageMetadata != null ? new UsageInfo
                 {
-                    PromptTokens = chunk.UsageMetadata.PromptTokenCount,
-                    CompletionTokens = chunk.UsageMetadata.CandidatesTokenCount,
-                    TotalTokens = chunk.UsageMetadata.TotalTokenCount
+                    InputTokens = chunk.UsageMetadata.PromptTokenCount,
+                    OutputTokens = chunk.UsageMetadata.CandidatesTokenCount,
+                    TotalTokens = chunk.UsageMetadata.TotalTokenCount,
+                    ReasoningTokens = chunk.UsageMetadata.ThoughtsTokenCount
                 } : null
             };
         }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using LLMAbstraction.Core.Interfaces;
 using LLMAbstraction.Core.Models;
 using LLMAbstraction.Providers.OpenAI.Models;
@@ -8,192 +9,281 @@ using LLMAbstraction.Providers.OpenAI.Models;
 namespace LLMAbstraction.Providers.OpenAI
 {
     /// <summary>
-    /// Converts between unified models and OpenAI-specific models
+    /// Converts between unified models and OpenAI Responses API models.
     /// </summary>
-    public class OpenAIConverter : IModelConverter<OpenAIChatRequest, OpenAIChatResponse>
+    public class OpenAIConverter : IModelConverter<OpenAIResponseRequest, OpenAIResponse>
     {
-        public OpenAIChatRequest ConvertRequest(UnifiedRequest request)
+        public OpenAIResponseRequest ConvertRequest(UnifiedRequest request)
         {
-            var openAIRequest = new OpenAIChatRequest
+            var openAIRequest = new OpenAIResponseRequest
             {
                 Model = request.Model,
-                Messages = ConvertMessages(request.Messages, request.System),
-                MaxTokens = request.Parameters.MaxTokens,
+                Input = ConvertMessages(request.Messages),
+                Instructions = request.Instructions,
+                MaxOutputTokens = request.Parameters.MaxOutputTokens,
                 Temperature = request.Parameters.Temperature,
                 TopP = request.Parameters.TopP,
-                Stop = request.Parameters.StopSequences,
-                Stream = request.Parameters.Stream
+                Stream = request.Parameters.Stream,
+                User = request.Metadata?.UserId,
+                Metadata = request.Metadata?.Tags
             };
 
-            // Convert tools if present
             if (request.Tools != null && request.Tools.Any())
             {
                 openAIRequest.Tools = request.Tools.Select(ConvertTool).ToList();
                 openAIRequest.ToolChoice = ConvertToolChoice(request.ToolChoice);
+
+                if (request.ToolChoice?.DisableParallelToolUse != null)
+                {
+                    openAIRequest.ParallelToolCalls = !request.ToolChoice.DisableParallelToolUse.Value;
+                }
             }
 
-            // Convert response format if present
             if (request.ResponseFormat != null)
             {
-                openAIRequest.ResponseFormat = ConvertResponseFormat(request.ResponseFormat);
+                openAIRequest.Text = new OpenAITextConfig
+                {
+                    Format = ConvertResponseFormat(request.ResponseFormat)
+                };
+            }
+
+            if (request.Reasoning != null)
+            {
+                openAIRequest.Reasoning = ConvertReasoning(request.Reasoning);
             }
 
             return openAIRequest;
         }
 
-        public UnifiedResponse ConvertResponse(OpenAIChatResponse response)
+        public UnifiedResponse ConvertResponse(OpenAIResponse response)
         {
+            var message = new UnifiedMessage
+            {
+                Role = MessageRole.Assistant,
+                Content = new List<ContentBlock>()
+            };
+
+            foreach (var item in response.Output)
+            {
+                switch (item.Type)
+                {
+                    case "message":
+                        AddMessageContent(message, item);
+                        break;
+
+                    case "function_call":
+                        message.Content.Add(new ToolCallContent
+                        {
+                            Id = item.CallId ?? item.Id ?? string.Empty,
+                            Name = item.Name ?? string.Empty,
+                            Input = DeserializeArguments(item.Arguments)
+                        });
+                        break;
+                }
+            }
+
+            var finishReason = ConvertFinishReason(response, message);
+
             return new UnifiedResponse
             {
                 Id = response.Id,
                 Model = response.Model,
-                Choices = response.Choices.Select(ConvertChoice).ToList(),
-                Usage = new UsageInfo
+                Choices = new List<ResponseChoice>
                 {
-                    PromptTokens = response.Usage.PromptTokens,
-                    CompletionTokens = response.Usage.CompletionTokens,
-                    TotalTokens = response.Usage.TotalTokens
+                    new ResponseChoice
+                    {
+                        Index = 0,
+                        Message = message,
+                        FinishReason = finishReason
+                    }
+                },
+                Usage = response.Usage != null ? new UsageInfo
+                {
+                    InputTokens = response.Usage.InputTokens,
+                    OutputTokens = response.Usage.OutputTokens,
+                    TotalTokens = response.Usage.TotalTokens,
+                    CacheReadTokens = response.Usage.InputTokenDetails?.CachedTokens,
+                    ReasoningTokens = response.Usage.OutputTokenDetails?.ReasoningTokens
+                } : new UsageInfo(),
+                ProviderMetadata = new Dictionary<string, object>
+                {
+                    { "status", response.Status ?? string.Empty }
                 }
             };
         }
 
-        private List<OpenAIMessage> ConvertMessages(List<UnifiedMessage> messages, string? system)
+        private List<object> ConvertMessages(List<UnifiedMessage> messages)
         {
-            var result = new List<OpenAIMessage>();
+            var result = new List<object>();
 
-            // Add system message if present
-            if (!string.IsNullOrEmpty(system))
-            {
-                result.Add(new OpenAIMessage
-                {
-                    Role = "system",
-                    Content = system
-                });
-            }
-
-            // Convert all messages
             foreach (var message in messages)
             {
-                result.Add(ConvertMessage(message));
+                var messageContent = new List<object>();
+
+                foreach (var block in message.Content)
+                {
+                    switch (block)
+                    {
+                        case TextContent text:
+                            messageContent.Add(new Dictionary<string, object?>
+                            {
+                                { "type", "input_text" },
+                                { "text", text.Text }
+                            });
+                            break;
+
+                        case ImageContent image:
+                            AddImageContent(messageContent, image.Source);
+                            break;
+
+                        case MediaContent media:
+                            AddMediaContent(messageContent, media);
+                            break;
+
+                        case ToolCallContent toolCall:
+                            result.Add(new Dictionary<string, object?>
+                            {
+                                { "type", "function_call" },
+                                { "call_id", toolCall.Id },
+                                { "name", toolCall.Name },
+                                { "arguments", JsonSerializer.Serialize(toolCall.Input) }
+                            });
+                            break;
+
+                        case ToolResultContent toolResult:
+                            result.Add(new Dictionary<string, object?>
+                            {
+                                { "type", "function_call_output" },
+                                { "call_id", toolResult.ToolCallId },
+                                { "output", SerializeToolResult(toolResult.Output) }
+                            });
+                            break;
+                    }
+                }
+
+                if (messageContent.Count > 0)
+                {
+                    result.Add(new Dictionary<string, object?>
+                    {
+                        { "type", "message" },
+                        { "role", ConvertRole(message.Role) },
+                        { "content", messageContent }
+                    });
+                }
             }
 
             return result;
         }
 
-        private OpenAIMessage ConvertMessage(UnifiedMessage message)
+        private static void AddImageContent(List<object> content, ImageSource source)
         {
-            var role = message.Role switch
+            if (!string.IsNullOrEmpty(source.Url))
             {
-                MessageRole.System => "system",
+                content.Add(new Dictionary<string, object?>
+                {
+                    { "type", "input_image" },
+                    { "detail", "auto" },
+                    { "image_url", source.Url }
+                });
+            }
+            else if (!string.IsNullOrEmpty(source.Data))
+            {
+                content.Add(new Dictionary<string, object?>
+                {
+                    { "type", "input_image" },
+                    { "detail", "auto" },
+                    { "image_url", $"data:{source.MediaType ?? "image/jpeg"};base64,{source.Data}" }
+                });
+            }
+        }
+
+        private static void AddMediaContent(List<object> content, MediaContent media)
+        {
+            if (media.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrEmpty(media.Source.FileId))
+                {
+                    content.Add(new Dictionary<string, object?>
+                    {
+                        { "type", "input_image" },
+                        { "detail", "auto" },
+                        { "file_id", media.Source.FileId }
+                    });
+                }
+                else if (!string.IsNullOrEmpty(media.Source.Url))
+                {
+                    content.Add(new Dictionary<string, object?>
+                    {
+                        { "type", "input_image" },
+                        { "detail", "auto" },
+                        { "image_url", media.Source.Url }
+                    });
+                }
+                else if (!string.IsNullOrEmpty(media.Source.Base64Data))
+                {
+                    content.Add(new Dictionary<string, object?>
+                    {
+                        { "type", "input_image" },
+                        { "detail", "auto" },
+                        { "image_url", $"data:{media.MediaType};base64,{media.Source.Base64Data}" }
+                    });
+                }
+
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(media.Source.FileId))
+            {
+                content.Add(new Dictionary<string, object?>
+                {
+                    { "type", "input_file" },
+                    { "file_id", media.Source.FileId }
+                });
+            }
+            else if (!string.IsNullOrEmpty(media.Source.Url))
+            {
+                content.Add(new Dictionary<string, object?>
+                {
+                    { "type", "input_file" },
+                    { "file_url", media.Source.Url }
+                });
+            }
+            else if (!string.IsNullOrEmpty(media.Source.Base64Data))
+            {
+                content.Add(new Dictionary<string, object?>
+                {
+                    { "type", "input_file" },
+                    { "filename", media.Source.FileName ?? "input" },
+                    { "file_data", $"data:{media.MediaType};base64,{media.Source.Base64Data}" }
+                });
+            }
+        }
+
+        private static string ConvertRole(MessageRole role)
+        {
+            return role switch
+            {
+                MessageRole.System => "developer",
                 MessageRole.User => "user",
                 MessageRole.Assistant => "assistant",
-                MessageRole.Tool => "tool",
-                _ => throw new ArgumentException($"Unknown role: {message.Role}")
+                MessageRole.Tool => "user",
+                _ => throw new ArgumentException($"Unknown role: {role}")
             };
-
-            // Check if this is a simple text message
-            if (message.Content.Count == 1 && message.Content[0] is TextContent textContent)
-            {
-                return new OpenAIMessage
-                {
-                    Role = role,
-                    Content = textContent.Text
-                };
-            }
-
-            // Handle multimodal or tool content
-            var contentParts = new List<object>();
-            List<OpenAIToolCall>? toolCalls = null;
-            string? toolCallId = null;
-
-            foreach (var block in message.Content)
-            {
-                switch (block)
-                {
-                    case TextContent text:
-                        contentParts.Add(new { type = "text", text = text.Text });
-                        break;
-
-                    case ImageContent image:
-                        if (!string.IsNullOrEmpty(image.Source.Url))
-                        {
-                            contentParts.Add(new
-                            {
-                                type = "image_url",
-                                image_url = new { url = image.Source.Url }
-                            });
-                        }
-                        else if (!string.IsNullOrEmpty(image.Source.Data))
-                        {
-                            contentParts.Add(new
-                            {
-                                type = "image_url",
-                                image_url = new
-                                {
-                                    url = $"data:{image.Source.MediaType};base64,{image.Source.Data}"
-                                }
-                            });
-                        }
-                        break;
-
-                    case ToolCallContent toolCall:
-                        toolCalls ??= new List<OpenAIToolCall>();
-                        toolCalls.Add(new OpenAIToolCall
-                        {
-                            Id = toolCall.Id,
-                            Type = "function",
-                            Function = new OpenAIFunctionCall
-                            {
-                                Name = toolCall.Name,
-                                Arguments = System.Text.Json.JsonSerializer.Serialize(toolCall.Input)
-                            }
-                        });
-                        break;
-
-                    case ToolResultContent toolResult:
-                        toolCallId = toolResult.ToolCallId;
-                        contentParts.Add(new { type = "text", text = toolResult.Output });
-                        break;
-                }
-            }
-
-            var openAIMessage = new OpenAIMessage { Role = role };
-
-            if (toolCalls != null)
-            {
-                openAIMessage.ToolCalls = toolCalls;
-            }
-
-            if (toolCallId != null)
-            {
-                openAIMessage.ToolCallId = toolCallId;
-            }
-
-            if (contentParts.Any())
-            {
-                openAIMessage.Content = contentParts.Count == 1 && contentParts[0] is string str
-                    ? str
-                    : contentParts;
-            }
-
-            return openAIMessage;
         }
 
-        private OpenAITool ConvertTool(ToolDefinition tool)
+        private static OpenAIResponseTool ConvertTool(ToolDefinition tool)
         {
-            return new OpenAITool
+            return new OpenAIResponseTool
             {
                 Type = "function",
-                Function = new OpenAIFunction
-                {
-                    Name = tool.Name,
-                    Description = tool.Description,
-                    Parameters = tool.Parameters
-                }
+                Name = tool.Name,
+                Description = tool.Description,
+                Parameters = tool.Parameters,
+                Strict = tool.Strict ?? true
             };
         }
 
-        private object? ConvertToolChoice(ToolChoice? toolChoice)
+        private static object? ConvertToolChoice(ToolChoice? toolChoice)
         {
             if (toolChoice == null)
                 return null;
@@ -203,86 +293,118 @@ namespace LLMAbstraction.Providers.OpenAI
                 ToolChoiceType.Auto => "auto",
                 ToolChoiceType.None => "none",
                 ToolChoiceType.Required => "required",
-                ToolChoiceType.Specific => new
+                ToolChoiceType.Specific => new Dictionary<string, object?>
                 {
-                    type = "function",
-                    function = new { name = toolChoice.ToolName }
+                    { "type", "function" },
+                    { "name", toolChoice.ToolName }
                 },
                 _ => "auto"
             };
         }
 
-        private object? ConvertResponseFormat(ResponseFormat responseFormat)
+        private static object? ConvertResponseFormat(ResponseFormat responseFormat)
         {
             return responseFormat.Type switch
             {
-                ResponseFormatType.Text => new { type = "text" },
-                ResponseFormatType.Json => new { type = "json_object" },
-                ResponseFormatType.JsonSchema => new
+                ResponseFormatType.Text => new Dictionary<string, object?>
                 {
-                    type = "json_schema",
-                    json_schema = new
-                    {
-                        name = responseFormat.JsonSchema!.Name,
-                        description = responseFormat.JsonSchema.Description,
-                        schema = responseFormat.JsonSchema.Schema,
-                        strict = responseFormat.JsonSchema.Strict
-                    }
+                    { "type", "text" }
+                },
+                ResponseFormatType.Json => new Dictionary<string, object?>
+                {
+                    { "type", "json_object" }
+                },
+                ResponseFormatType.JsonSchema => new Dictionary<string, object?>
+                {
+                    { "type", "json_schema" },
+                    { "name", responseFormat.JsonSchema!.Name },
+                    { "description", responseFormat.JsonSchema.Description },
+                    { "schema", responseFormat.JsonSchema.Schema },
+                    { "strict", responseFormat.JsonSchema.Strict }
                 },
                 _ => null
             };
         }
 
-        private ResponseChoice ConvertChoice(OpenAIChoice choice)
+        private static OpenAIReasoningConfig? ConvertReasoning(ReasoningOptions reasoning)
         {
-            var message = new UnifiedMessage
+            if (reasoning.Enabled == false && string.IsNullOrEmpty(reasoning.Effort))
             {
-                Role = MessageRole.Assistant,
-                Content = new List<ContentBlock>()
-            };
-
-            // Handle text content
-            if (choice.Message.Content is string textContent && !string.IsNullOrEmpty(textContent))
-            {
-                message.Content.Add(new TextContent { Text = textContent });
+                return new OpenAIReasoningConfig { Effort = "none" };
             }
 
-            // Handle tool calls
-            if (choice.Message.ToolCalls != null)
-            {
-                foreach (var toolCall in choice.Message.ToolCalls)
-                {
-                    var input = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(
-                        toolCall.Function.Arguments) ?? new Dictionary<string, object>();
+            if (string.IsNullOrEmpty(reasoning.Effort) && string.IsNullOrEmpty(reasoning.Summary))
+                return null;
 
-                    message.Content.Add(new ToolCallContent
-                    {
-                        Id = toolCall.Id,
-                        Name = toolCall.Function.Name,
-                        Input = input
-                    });
-                }
-            }
-
-            return new ResponseChoice
+            return new OpenAIReasoningConfig
             {
-                Index = choice.Index,
-                Message = message,
-                FinishReason = ConvertFinishReason(choice.FinishReason)
+                Effort = reasoning.Effort,
+                Summary = reasoning.Summary ?? (reasoning.IncludeThoughts == true ? "auto" : null)
             };
         }
 
-        private FinishReason ConvertFinishReason(string? reason)
+        private static void AddMessageContent(UnifiedMessage message, OpenAIOutputItem item)
         {
-            return reason switch
+            if (item.Content == null)
+                return;
+
+            foreach (var content in item.Content)
             {
-                "stop" => FinishReason.Stop,
-                "length" => FinishReason.MaxTokens,
-                "tool_calls" => FinishReason.ToolCalls,
-                "content_filter" => FinishReason.ContentFilter,
-                "function_call" => FinishReason.ToolCalls,
-                _ => FinishReason.Other
+                if ((content.Type == "output_text" || content.Type == "text") && content.Text != null)
+                {
+                    message.Content.Add(new TextContent { Text = content.Text });
+                }
+            }
+        }
+
+        private static Dictionary<string, object> DeserializeArguments(string? arguments)
+        {
+            if (string.IsNullOrWhiteSpace(arguments))
+                return new Dictionary<string, object>();
+
+            try
+            {
+                return JsonSerializer.Deserialize<Dictionary<string, object>>(arguments)
+                    ?? new Dictionary<string, object>();
+            }
+            catch
+            {
+                return new Dictionary<string, object>
+                {
+                    { "raw", arguments }
+                };
+            }
+        }
+
+        private static string SerializeToolResult(object? output)
+        {
+            return output switch
+            {
+                null => string.Empty,
+                string text => text,
+                _ => JsonSerializer.Serialize(output)
             };
+        }
+
+        private static FinishReason ConvertFinishReason(OpenAIResponse response, UnifiedMessage message)
+        {
+            if (message.Content.Any(block => block is ToolCallContent))
+                return FinishReason.ToolCalls;
+
+            if (response.Status == "incomplete")
+            {
+                return response.IncompleteDetails?.Reason switch
+                {
+                    "max_output_tokens" => FinishReason.MaxTokens,
+                    "content_filter" => FinishReason.ContentFilter,
+                    _ => FinishReason.Other
+                };
+            }
+
+            if (response.Error != null)
+                return FinishReason.Error;
+
+            return FinishReason.Stop;
         }
     }
 }

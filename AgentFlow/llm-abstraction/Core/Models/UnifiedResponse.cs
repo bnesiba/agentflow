@@ -32,6 +32,11 @@ namespace LLMAbstraction.Core.Models
         /// Provider-specific data (escape hatch)
         /// </summary>
         public Dictionary<string, object>? ProviderSpecific { get; set; }
+
+        /// <summary>
+        /// Provider-native metadata that should be preserved across turns when needed.
+        /// </summary>
+        public Dictionary<string, object>? ProviderMetadata { get; set; }
     }
 
     /// <summary>
@@ -53,6 +58,8 @@ namespace LLMAbstraction.Core.Models
         /// Why the generation stopped
         /// </summary>
         public FinishReason FinishReason { get; set; }
+
+        public Dictionary<string, object>? ProviderMetadata { get; set; }
     }
 
     /// <summary>
@@ -74,11 +81,26 @@ namespace LLMAbstraction.Core.Models
     /// </summary>
     public class UsageInfo
     {
-        public int PromptTokens { get; set; }
-        public int CompletionTokens { get; set; }
+        public int InputTokens { get; set; }
+        public int OutputTokens { get; set; }
         public int TotalTokens { get; set; }
 
+        [System.Obsolete("Use InputTokens instead.")]
+        public int PromptTokens
+        {
+            get => InputTokens;
+            set => InputTokens = value;
+        }
+
+        [System.Obsolete("Use OutputTokens instead.")]
+        public int CompletionTokens
+        {
+            get => OutputTokens;
+            set => OutputTokens = value;
+        }
+
         // Optional cache-related tokens (for Claude)
+        public int? ReasoningTokens { get; set; }
         public int? CacheCreationTokens { get; set; }
         public int? CacheReadTokens { get; set; }
     }

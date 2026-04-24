@@ -36,6 +36,8 @@ namespace LLMAbstraction.Core.Models
         /// Usage information (only present in final chunk for some providers)
         /// </summary>
         public UsageInfo? Usage { get; set; }
+
+        public Dictionary<string, object>? ProviderMetadata { get; set; }
     }
 
     /// <summary>
@@ -83,5 +85,7 @@ namespace LLMAbstraction.Core.Models
         /// Arguments delta (JSON string fragment)
         /// </summary>
         public string? Arguments { get; set; }
+
+        public string? Type { get; set; }
     }
 }

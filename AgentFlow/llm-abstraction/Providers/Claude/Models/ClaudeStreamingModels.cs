@@ -58,6 +58,12 @@ namespace LLMAbstraction.Providers.Claude.Models
 
         [JsonPropertyName("partial_json")]
         public string? PartialJson { get; set; }
+
+        [JsonPropertyName("thinking")]
+        public string? Thinking { get; set; }
+
+        [JsonPropertyName("signature")]
+        public string? Signature { get; set; }
     }
 
     /// <summary>
