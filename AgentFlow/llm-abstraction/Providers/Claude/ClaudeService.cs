@@ -127,7 +127,6 @@ namespace LLMAbstraction.Providers.Claude
             var response = await _httpClient.PostAsync(
                 "/v1/messages",
                 content,
-                HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
 
             // Handle errors

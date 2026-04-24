@@ -117,7 +117,6 @@ namespace LLMAbstraction.Providers.Gemini
             var response = await _httpClient.PostAsync(
                 endpoint,
                 content,
-                HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
 
             // Handle errors

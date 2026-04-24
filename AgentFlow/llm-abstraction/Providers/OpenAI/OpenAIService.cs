@@ -118,7 +118,6 @@ namespace LLMAbstraction.Providers.OpenAI
             var response = await _httpClient.PostAsync(
                 "/chat/completions",
                 content,
-                HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
 
             // Handle errors
