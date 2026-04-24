@@ -1,0 +1,9 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/.vs
+/AgentFlow/.vs
+/AgentFlow/AgentFlow/obj
+/AgentFlow/llm-abstraction/obj
+/AgentFlow/LLMConnector/obj
