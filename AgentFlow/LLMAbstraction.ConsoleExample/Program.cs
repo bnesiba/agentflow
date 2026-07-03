@@ -1,11 +1,11 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using LLMAbstraction.Core;
 using LLMAbstraction.Core.Interfaces;
 using LLMAbstraction.Core.Models;
 
-namespace LLMAbstraction.Examples.ConsoleApp
+namespace LLMAbstraction.ConsoleExample
 {
     class Program
     {
@@ -50,10 +50,10 @@ namespace LLMAbstraction.Examples.ConsoleApp
                 {
                     Model = model,
                     Messages = messages,
-                    System = "You are a helpful assistant.",
+                    Instructions = "You are a helpful assistant.",
                     Parameters = new GenerationParameters
                     {
-                        MaxTokens = 500,
+                        MaxOutputTokens = 500,
                         Temperature = 0.7
                     }
                 };
@@ -62,16 +62,27 @@ namespace LLMAbstraction.Examples.ConsoleApp
                 {
                     // Generate response
                     var response = await service.GenerateAsync(request);
+                    if (response.Choices.Count == 0)
+                    {
+                        Console.WriteLine("\nAssistant returned no choices.\n");
+                        continue;
+                    }
+
                     var choice = response.Choices[0];
-                    var textContent = choice.Message.Content[0] as TextContent;
+                    var textContent = GetTextContent(choice.Message);
 
                     if (textContent != null)
                     {
-                        Console.WriteLine($"\nAssistant: {textContent.Text}\n");
+                        Console.WriteLine($"\nAssistant: {textContent}\n");
                         Console.WriteLine($"[Tokens: {response.Usage.TotalTokens}, " +
                             $"Finish: {choice.FinishReason}]\n");
 
                         // Add assistant message to history
+                        messages.Add(choice.Message);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"\nAssistant returned non-text content. Finish: {choice.FinishReason}\n");
                         messages.Add(choice.Message);
                     }
                 }
@@ -107,12 +118,16 @@ namespace LLMAbstraction.Examples.ConsoleApp
             var envVar = provider switch
             {
                 LLMProvider.OpenAI => "OPENAI_API_KEY",
-                LLMProvider.Claude => "CLAUDE_API_KEY",
+                LLMProvider.Claude => "ANTHROPIC_API_KEY",
                 LLMProvider.Gemini => "GEMINI_API_KEY",
                 _ => ""
             };
 
             var apiKey = Environment.GetEnvironmentVariable(envVar);
+            if (string.IsNullOrEmpty(apiKey) && provider == LLMProvider.Claude)
+            {
+                apiKey = Environment.GetEnvironmentVariable("CLAUDE_API_KEY");
+            }
 
             if (string.IsNullOrEmpty(apiKey))
             {
@@ -138,11 +153,26 @@ namespace LLMAbstraction.Examples.ConsoleApp
         {
             return provider switch
             {
-                LLMProvider.OpenAI => "gpt-4o-mini",
-                LLMProvider.Claude => "claude-opus-4-6",
+                LLMProvider.OpenAI => "gpt-5-mini",
+                LLMProvider.Claude => "claude-sonnet-4-20250514",
                 LLMProvider.Gemini => "gemini-2.5-flash",
                 _ => throw new ArgumentException($"Unknown provider: {provider}")
             };
+        }
+
+        static string? GetTextContent(UnifiedMessage message)
+        {
+            var parts = new List<string>();
+
+            foreach (var block in message.Content)
+            {
+                if (block is TextContent text && !string.IsNullOrEmpty(text.Text))
+                {
+                    parts.Add(text.Text);
+                }
+            }
+
+            return parts.Count > 0 ? string.Join(Environment.NewLine, parts) : null;
         }
     }
 }

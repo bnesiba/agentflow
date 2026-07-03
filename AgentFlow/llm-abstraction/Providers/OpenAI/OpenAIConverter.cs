@@ -15,14 +15,16 @@ namespace LLMAbstraction.Providers.OpenAI
     {
         public OpenAIResponseRequest ConvertRequest(UnifiedRequest request)
         {
+            var supportsSamplingParameters = SupportsSamplingParameters(request);
+
             var openAIRequest = new OpenAIResponseRequest
             {
                 Model = request.Model,
                 Input = ConvertMessages(request.Messages),
                 Instructions = request.Instructions,
                 MaxOutputTokens = request.Parameters.MaxOutputTokens,
-                Temperature = request.Parameters.Temperature,
-                TopP = request.Parameters.TopP,
+                Temperature = supportsSamplingParameters ? request.Parameters.Temperature : null,
+                TopP = supportsSamplingParameters ? request.Parameters.TopP : null,
                 Stream = request.Parameters.Stream,
                 User = request.Metadata?.UserId,
                 Metadata = request.Metadata?.Tags
@@ -53,6 +55,22 @@ namespace LLMAbstraction.Providers.OpenAI
             }
 
             return openAIRequest;
+        }
+
+        private static bool SupportsSamplingParameters(UnifiedRequest request)
+        {
+            var model = request.Model;
+
+            if (!model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (model.Equals("gpt-5", StringComparison.OrdinalIgnoreCase) ||
+                model.StartsWith("gpt-5-", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return string.Equals(request.Reasoning?.Effort, "none", StringComparison.OrdinalIgnoreCase);
         }
 
         public UnifiedResponse ConvertResponse(OpenAIResponse response)

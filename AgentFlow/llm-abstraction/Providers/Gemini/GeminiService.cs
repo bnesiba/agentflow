@@ -31,7 +31,7 @@ namespace LLMAbstraction.Providers.Gemini
             
             _httpClient = new HttpClient
             {
-                BaseAddress = new Uri(_baseUrl)
+                BaseAddress = CreateBaseAddress(_baseUrl)
             };
         }
 
@@ -45,6 +45,7 @@ namespace LLMAbstraction.Providers.Gemini
             _baseUrl = httpClient.BaseAddress?.ToString() ?? 
                 "https://generativelanguage.googleapis.com/v1beta";
             _converter = converter ?? new GeminiConverter();
+            _httpClient.BaseAddress = CreateBaseAddress(_baseUrl);
         }
 
         public async Task<UnifiedResponse> GenerateAsync(
@@ -56,7 +57,7 @@ namespace LLMAbstraction.Providers.Gemini
 
             // Build endpoint URL with model and API key
             // Gemini uses model in the URL path
-            var endpoint = $"/models/{request.Model}:generateContent?key={_apiKey}";
+            var endpoint = $"models/{request.Model}:generateContent?key={_apiKey}";
 
             // Serialize request
             var jsonOptions = new JsonSerializerOptions
@@ -113,7 +114,7 @@ namespace LLMAbstraction.Providers.Gemini
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
             // Use streaming endpoint
-            var endpoint = $"/models/{request.Model}:streamGenerateContent?alt=sse&key={_apiKey}";
+            var endpoint = $"models/{request.Model}:streamGenerateContent?alt=sse&key={_apiKey}";
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint)
             {
                 Content = content
@@ -202,6 +203,13 @@ namespace LLMAbstraction.Providers.Gemini
                     ReasoningTokens = chunk.UsageMetadata.ThoughtsTokenCount
                 } : null
             };
+        }
+
+        private static Uri CreateBaseAddress(string baseUrl)
+        {
+            return new Uri(baseUrl.EndsWith("/", StringComparison.Ordinal)
+                ? baseUrl
+                : baseUrl + "/");
         }
     }
 }

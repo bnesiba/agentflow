@@ -35,14 +35,14 @@ var service = LLMServiceFactory.CreateOpenAI("your-api-key");
 // Create a request
 var request = new UnifiedRequest
 {
-    Model = "gpt-4o",
+    Model = "gpt-5-mini",
     Messages = new List<UnifiedMessage>
     {
         new UnifiedMessage(MessageRole.User, "What is the capital of France?")
     },
     Parameters = new GenerationParameters
     {
-        MaxTokens = 100,
+        MaxOutputTokens = 100,
         Temperature = 0.7
     }
 };
@@ -60,11 +60,11 @@ The same code works with any provider - just change the service creation:
 ```csharp
 // OpenAI
 var openAI = LLMServiceFactory.CreateOpenAI("openai-key");
-request.Model = "gpt-4o";
+request.Model = "gpt-5-mini";
 
 // Claude
 var claude = LLMServiceFactory.CreateClaude("claude-key");
-request.Model = "claude-opus-4-6";
+request.Model = "claude-sonnet-4-20250514";
 
 // Gemini
 var gemini = LLMServiceFactory.CreateGemini("gemini-key");
@@ -114,7 +114,7 @@ Common parameters across all providers:
 ```csharp
 var parameters = new GenerationParameters
 {
-    MaxTokens = 1000,           // Maximum tokens to generate
+    MaxOutputTokens = 1000,           // Maximum tokens to generate
     Temperature = 0.7,          // Sampling temperature (0.0-2.0)
     TopP = 0.9,                 // Nucleus sampling
     TopK = 40,                  // Top-k sampling (Gemini/Claude)
@@ -149,7 +149,7 @@ var tool = new ToolDefinition
 
 var request = new UnifiedRequest
 {
-    Model = "gpt-4o",
+    Model = "gpt-5-mini",
     Messages = messages,
     Tools = new List<ToolDefinition> { tool },
     ToolChoice = new ToolChoice { Type = ToolChoiceType.Auto }
@@ -173,7 +173,7 @@ var service = LLMServiceFactory.CreateOpenAI(
 );
 ```
 
-**Supported Models:** `gpt-4o`, `gpt-4o-mini`, `gpt-5.1`, `gpt-5.2`, etc.
+**Supported Models:** `gpt-5-mini`, `gpt-5.1`, `gpt-5.2`, etc.
 
 **Notes:**
 - Supports 6 message roles (system, user, assistant, tool, function, developer)
@@ -190,7 +190,7 @@ var service = LLMServiceFactory.CreateClaude(
 );
 ```
 
-**Supported Models:** `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-0`
+**Supported Models:** `claude-opus-4-20250514`, `claude-sonnet-4-20250514`, `claude-haiku-3-5-20241022`
 
 **Notes:**
 - Uses only 2 roles (user, assistant)
@@ -222,32 +222,32 @@ var service = LLMServiceFactory.CreateGemini(
 
 ```
 LLMAbstraction/
-├── Core/
-│   ├── Models/
-│   │   ├── UnifiedMessage.cs       # Message and content block models
-│   │   ├── UnifiedRequest.cs       # Request model
-│   │   └── UnifiedResponse.cs      # Response model
-│   ├── Interfaces/
-│   │   └── ILLMService.cs          # Core service interface
-│   └── LLMServiceFactory.cs        # Factory for creating services
-├── Providers/
-│   ├── OpenAI/
-│   │   ├── Models/
-│   │   │   └── OpenAIModels.cs     # OpenAI-specific models
-│   │   ├── OpenAIConverter.cs      # Conversion logic
-│   │   └── OpenAIService.cs        # Service implementation
-│   ├── Claude/
-│   │   ├── Models/
-│   │   │   └── ClaudeModels.cs
-│   │   ├── ClaudeConverter.cs
-│   │   └── ClaudeService.cs
-│   └── Gemini/
-│       ├── Models/
-│       │   └── GeminiModels.cs
-│       ├── GeminiConverter.cs
-│       └── GeminiService.cs
-└── Examples/
-    └── BasicUsage.cs               # Usage examples
+|-- Core/
+|   |-- Models/
+|   |   |-- UnifiedMessage.cs       # Message and content block models
+|   |   |-- UnifiedRequest.cs       # Request model
+|   |   `-- UnifiedResponse.cs      # Response model
+|   |-- Interfaces/
+|   |   `-- ILLMService.cs          # Core service interface
+|   `-- LLMServiceFactory.cs        # Factory for creating services
+|-- Providers/
+|   |-- OpenAI/
+|   |   |-- Models/
+|   |   |   `-- OpenAIModels.cs     # OpenAI-specific models
+|   |   |-- OpenAIConverter.cs      # Conversion logic
+|   |   `-- OpenAIService.cs        # Service implementation
+|   |-- Claude/
+|   |   |-- Models/
+|   |   |   `-- ClaudeModels.cs
+|   |   |-- ClaudeConverter.cs
+|   |   `-- ClaudeService.cs
+|   `-- Gemini/
+|       |-- Models/
+|       |   `-- GeminiModels.cs
+|       |-- GeminiConverter.cs
+|       `-- GeminiService.cs
+`-- Examples/
+    `-- BasicUsage.cs               # Usage examples
 ```
 
 ### Design Patterns
@@ -265,15 +265,15 @@ LLMAbstraction/
 ```csharp
 var request = new UnifiedRequest
 {
-    Model = "claude-opus-4-6",
-    System = "You are a helpful coding assistant.",
+    Model = "claude-sonnet-4-20250514",
+    Instructions = "You are a helpful coding assistant.",
     Messages = new List<UnifiedMessage>
     {
         new UnifiedMessage(MessageRole.User, "How do I reverse a string in C#?"),
         new UnifiedMessage(MessageRole.Assistant, "You can use Array.Reverse()..."),
         new UnifiedMessage(MessageRole.User, "Can you show me an example?")
     },
-    Parameters = new GenerationParameters { MaxTokens = 500 }
+    Parameters = new GenerationParameters { MaxOutputTokens = 500 }
 };
 ```
 
@@ -319,7 +319,7 @@ Use the `ProviderOptions` escape hatch for provider-specific features:
 ```csharp
 var request = new UnifiedRequest
 {
-    Model = "gpt-4o",
+    Model = "gpt-5-mini",
     Messages = messages,
     Parameters = parameters,
     ProviderOptions = new ProviderOptions
@@ -342,7 +342,7 @@ All providers support structured output with JSON mode and JSON Schema:
 ```csharp
 var request = new UnifiedRequest
 {
-    Model = "gpt-4o",
+    Model = "gpt-5-mini",
     Messages = new List<UnifiedMessage>
     {
         new UnifiedMessage(MessageRole.User, "List 3 colors with hex codes")
@@ -376,7 +376,7 @@ var personSchema = new Dictionary<string, object>
 
 var request = new UnifiedRequest
 {
-    Model = "gpt-4o",
+    Model = "gpt-5-mini",
     Messages = new List<UnifiedMessage>
     {
         new UnifiedMessage(MessageRole.User, "Generate a person profile")
@@ -397,7 +397,7 @@ var request = new UnifiedRequest
 **Provider Notes:**
 - **OpenAI**: Native `response_format` support
 - **Claude**: Native `output_config.format` support (available since late 2024)
-- **Gemini**: Uses `responseMimeType` and `responseSchema` in generation config
+- **Gemini**: Uses `responseMimeType` and `responseJsonSchema` in generation config
 
 ## Streaming
 
@@ -408,7 +408,7 @@ All providers support real-time streaming responses:
 ```csharp
 var request = new UnifiedRequest
 {
-    Model = "gpt-4o",
+    Model = "gpt-5-mini",
     Messages = new List<UnifiedMessage>
     {
         new UnifiedMessage(MessageRole.User, "Write a poem about coding")
@@ -507,9 +507,7 @@ catch (InvalidOperationException ex)
 
 ## Dependencies
 
-- .NET 6.0 or higher
-- System.Net.Http
-- System.Text.Json
+- .NET 8.0 or higher
 
 ## Contributing
 

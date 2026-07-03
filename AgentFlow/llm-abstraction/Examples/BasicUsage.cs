@@ -23,14 +23,14 @@ namespace LLMAbstraction.Examples
             // Create a simple request
             var request = new UnifiedRequest
             {
-                Model = "gpt-4o",
+                Model = "gpt-5-mini",
                 Messages = new List<UnifiedMessage>
                 {
                     new UnifiedMessage(MessageRole.User, "What is the capital of France?")
                 },
                 Parameters = new GenerationParameters
                 {
-                    MaxTokens = 100,
+                    MaxOutputTokens = 100,
                     Temperature = 0.7
                 }
             };
@@ -54,8 +54,8 @@ namespace LLMAbstraction.Examples
 
             var request = new UnifiedRequest
             {
-                Model = "claude-opus-4-6",
-                System = "You are a helpful assistant that speaks like a pirate.",
+                Model = "claude-sonnet-4-20250514",
+                Instructions = "You are a helpful assistant that speaks like a pirate.",
                 Messages = new List<UnifiedMessage>
                 {
                     new UnifiedMessage(MessageRole.User, "Hello! Who are you?"),
@@ -64,7 +64,7 @@ namespace LLMAbstraction.Examples
                 },
                 Parameters = new GenerationParameters
                 {
-                    MaxTokens = 150,
+                    MaxOutputTokens = 150,
                     Temperature = 0.8
                 }
             };
@@ -89,7 +89,7 @@ namespace LLMAbstraction.Examples
                 },
                 Parameters = new GenerationParameters
                 {
-                    MaxTokens = 100,
+                    MaxOutputTokens = 100,
                     Temperature = 0.5
                 }
             };
@@ -97,14 +97,14 @@ namespace LLMAbstraction.Examples
             // Try with OpenAI
             Console.WriteLine("=== OpenAI ===");
             var openAIService = LLMServiceFactory.CreateOpenAI("openai-key");
-            request.Model = "gpt-4o";
+            request.Model = "gpt-5-mini";
             var openAIResponse = await openAIService.GenerateAsync(request);
             PrintResponse(openAIResponse);
 
             // Try with Claude
             Console.WriteLine("\n=== Claude ===");
             var claudeService = LLMServiceFactory.CreateClaude("claude-key");
-            request.Model = "claude-opus-4-6";
+            request.Model = "claude-sonnet-4-20250514";
             var claudeResponse = await claudeService.GenerateAsync(request);
             PrintResponse(claudeResponse);
 
@@ -150,7 +150,7 @@ namespace LLMAbstraction.Examples
 
             var request = new UnifiedRequest
             {
-                Model = "gpt-4o",
+                Model = "gpt-5-mini",
                 Messages = new List<UnifiedMessage>
                 {
                     new UnifiedMessage(MessageRole.User, "What's the weather in Boston?")
@@ -159,7 +159,7 @@ namespace LLMAbstraction.Examples
                 ToolChoice = new ToolChoice { Type = ToolChoiceType.Auto },
                 Parameters = new GenerationParameters
                 {
-                    MaxTokens = 200
+                    MaxOutputTokens = 200
                 }
             };
 
@@ -194,7 +194,7 @@ namespace LLMAbstraction.Examples
 
             var request = new UnifiedRequest
             {
-                Model = "gpt-4o",
+                Model = "gpt-5-mini",
                 Messages = new List<UnifiedMessage>
                 {
                     new UnifiedMessage(MessageRole.User, new List<ContentBlock>
@@ -211,7 +211,7 @@ namespace LLMAbstraction.Examples
                 },
                 Parameters = new GenerationParameters
                 {
-                    MaxTokens = 300
+                    MaxOutputTokens = 300
                 }
             };
 

@@ -14,18 +14,20 @@ namespace LLMAbstraction.Providers.Claude
     {
         public ClaudeMessageRequest ConvertRequest(UnifiedRequest request)
         {
+            var thinking = ConvertReasoning(request.Reasoning);
+
             var claudeRequest = new ClaudeMessageRequest
             {
                 Model = request.Model,
                 MaxTokens = request.Parameters.MaxOutputTokens ?? 1024, // Claude requires max_tokens
                 Messages = ConvertMessages(request.Messages),
                 System = request.Instructions,
-                Temperature = request.Parameters.Temperature,
-                TopP = request.Parameters.TopP,
-                TopK = request.Parameters.TopK,
+                Temperature = SupportsTemperature(thinking) ? request.Parameters.Temperature : null,
+                TopP = SupportsTopP(thinking, request.Parameters.TopP) ? request.Parameters.TopP : null,
+                TopK = SupportsTopK(thinking) ? request.Parameters.TopK : null,
                 StopSequences = request.Parameters.StopSequences,
                 Stream = request.Parameters.Stream,
-                Thinking = ConvertReasoning(request.Reasoning),
+                Thinking = thinking,
                 Metadata = request.Metadata?.UserId != null
                     ? new ClaudeMetadata { UserId = request.Metadata.UserId }
                     : null
@@ -45,6 +47,26 @@ namespace LLMAbstraction.Providers.Claude
             }
 
             return claudeRequest;
+        }
+
+        private static bool SupportsTemperature(ClaudeThinkingConfig? thinking)
+        {
+            return !IsThinkingEnabled(thinking);
+        }
+
+        private static bool SupportsTopK(ClaudeThinkingConfig? thinking)
+        {
+            return !IsThinkingEnabled(thinking);
+        }
+
+        private static bool SupportsTopP(ClaudeThinkingConfig? thinking, double? topP)
+        {
+            return !IsThinkingEnabled(thinking) || topP == null || topP >= 0.95 && topP <= 1.0;
+        }
+
+        private static bool IsThinkingEnabled(ClaudeThinkingConfig? thinking)
+        {
+            return thinking?.Type == "enabled" || thinking?.Type == "adaptive";
         }
 
         public UnifiedResponse ConvertResponse(ClaudeMessageResponse response)

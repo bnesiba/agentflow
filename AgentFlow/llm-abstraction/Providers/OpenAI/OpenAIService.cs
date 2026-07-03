@@ -32,7 +32,7 @@ namespace LLMAbstraction.Providers.OpenAI
 
             _httpClient = new HttpClient
             {
-                BaseAddress = new Uri(_baseUrl)
+                BaseAddress = CreateBaseAddress(_baseUrl)
             };
             _httpClient.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", _apiKey);
@@ -44,6 +44,7 @@ namespace LLMAbstraction.Providers.OpenAI
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
             _baseUrl = httpClient.BaseAddress?.ToString() ?? "https://api.openai.com/v1";
             _converter = converter ?? new OpenAIConverter();
+            _httpClient.BaseAddress = CreateBaseAddress(_baseUrl);
 
             if (_httpClient.DefaultRequestHeaders.Authorization == null)
             {
@@ -63,7 +64,7 @@ namespace LLMAbstraction.Providers.OpenAI
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
             var response = await _httpClient.PostAsync(
-                "/responses",
+                "responses",
                 content,
                 cancellationToken);
 
@@ -98,7 +99,7 @@ namespace LLMAbstraction.Providers.OpenAI
             var jsonContent = JsonSerializer.Serialize(openAIRequest, jsonOptions);
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/responses")
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "responses")
             {
                 Content = content
             };
@@ -155,6 +156,13 @@ namespace LLMAbstraction.Providers.OpenAI
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
                 DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
             };
+        }
+
+        private static Uri CreateBaseAddress(string baseUrl)
+        {
+            return new Uri(baseUrl.EndsWith("/", StringComparison.Ordinal)
+                ? baseUrl
+                : baseUrl + "/");
         }
 
         private static StreamChunk? ConvertStreamEvent(OpenAIResponseStreamEvent streamEvent)

@@ -8,6 +8,7 @@
 /AgentFlow/llm-abstraction/obj
 /AgentFlow/LLMConnector/obj
 /AgentFlow/AgentFlow/bin/Debug/net8.0
-/AgentFlow/ConsoleApp1/bin/Debug/net8.0
-/AgentFlow/ConsoleApp1/obj
+/AgentFlow/LLMAbstraction.ConsoleExample/bin/Debug/net8.0
+/AgentFlow/LLMAbstraction.ConsoleExample/obj
 /AgentFlow/llm-abstraction/bin/Debug/net6.0
+/AgentFlow/llm-abstraction/bin/Debug/net8.0

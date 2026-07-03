@@ -20,7 +20,7 @@ namespace LLMAbstraction.Examples
 
             var request = new UnifiedRequest
             {
-                Model = "gpt-4o",
+                Model = "gpt-5-mini",
                 Messages = new List<UnifiedMessage>
                 {
                     new UnifiedMessage(MessageRole.System, "You are a helpful assistant that outputs JSON."),
@@ -28,7 +28,7 @@ namespace LLMAbstraction.Examples
                 },
                 Parameters = new GenerationParameters
                 {
-                    MaxTokens = 200,
+                    MaxOutputTokens = 200,
                     Temperature = 0.7
                 },
                 ResponseFormat = new ResponseFormat
@@ -90,7 +90,7 @@ namespace LLMAbstraction.Examples
 
             var request = new UnifiedRequest
             {
-                Model = "gpt-4o",
+                Model = "gpt-5-mini",
                 Messages = new List<UnifiedMessage>
                 {
                     new UnifiedMessage(MessageRole.User, 
@@ -98,7 +98,7 @@ namespace LLMAbstraction.Examples
                 },
                 Parameters = new GenerationParameters
                 {
-                    MaxTokens = 300,
+                    MaxOutputTokens = 300,
                     Temperature = 0.7
                 },
                 ResponseFormat = new ResponseFormat
@@ -131,14 +131,14 @@ namespace LLMAbstraction.Examples
 
             var request = new UnifiedRequest
             {
-                Model = "gpt-4o",
+                Model = "gpt-5-mini",
                 Messages = new List<UnifiedMessage>
                 {
                     new UnifiedMessage(MessageRole.User, "Write a short poem about coding.")
                 },
                 Parameters = new GenerationParameters
                 {
-                    MaxTokens = 200,
+                    MaxOutputTokens = 200,
                     Temperature = 0.8
                 }
             };
@@ -172,14 +172,14 @@ namespace LLMAbstraction.Examples
 
             var request = new UnifiedRequest
             {
-                Model = "claude-opus-4-6",
+                Model = "claude-sonnet-4-20250514",
                 Messages = new List<UnifiedMessage>
                 {
                     new UnifiedMessage(MessageRole.User, "Explain quantum computing in simple terms.")
                 },
                 Parameters = new GenerationParameters
                 {
-                    MaxTokens = 500,
+                    MaxOutputTokens = 500,
                     Temperature = 0.7
                 }
             };
@@ -208,14 +208,14 @@ namespace LLMAbstraction.Examples
 
             var request = new UnifiedRequest
             {
-                Model = "claude-opus-4-6",
+                Model = "claude-sonnet-4-20250514",
                 Messages = new List<UnifiedMessage>
                 {
                     new UnifiedMessage(MessageRole.User, "List 5 programming languages with their primary use cases.")
                 },
                 Parameters = new GenerationParameters
                 {
-                    MaxTokens = 500,
+                    MaxOutputTokens = 500,
                     Temperature = 0.5
                 },
                 ResponseFormat = new ResponseFormat
@@ -269,7 +269,7 @@ namespace LLMAbstraction.Examples
                 },
                 Parameters = new GenerationParameters
                 {
-                    MaxTokens = 1000,
+                    MaxOutputTokens = 1000,
                     Temperature = 0.7
                 },
                 ResponseFormat = new ResponseFormat
@@ -299,7 +299,7 @@ namespace LLMAbstraction.Examples
 
             var request = new UnifiedRequest
             {
-                Model = "gpt-4o",
+                Model = "gpt-5-mini",
                 Messages = new List<UnifiedMessage>
                 {
                     new UnifiedMessage(MessageRole.User, "What's the weather in Boston?")
@@ -327,7 +327,7 @@ namespace LLMAbstraction.Examples
                 },
                 Parameters = new GenerationParameters
                 {
-                    MaxTokens = 200
+                    MaxOutputTokens = 200
                 }
             };
 

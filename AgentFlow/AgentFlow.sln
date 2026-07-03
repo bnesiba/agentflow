@@ -7,7 +7,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AgentFlow", "AgentFlow\Agen
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LLMAbstraction", "llm-abstraction\LLMAbstraction.csproj", "{ACB4921B-C0F6-64CE-88B2-CA3D684061A8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConsoleApp1", "ConsoleApp1\ConsoleApp1.csproj", "{7881124B-A55D-404C-AAC2-1637D9E660A9}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LLMAbstraction.ConsoleExample", "LLMAbstraction.ConsoleExample\LLMAbstraction.ConsoleExample.csproj", "{7881124B-A55D-404C-AAC2-1637D9E660A9}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
