@@ -20,11 +20,15 @@ namespace LLMAbstraction.Providers.OpenAI
         {
             "model", "input", "previous_response_id", "instructions", "max_output_tokens",
             "temperature", "top_p", "stream", "tools", "tool_choice", "parallel_tool_calls",
-            "text", "reasoning", "user", "metadata"
+            "text", "reasoning", "user", "metadata", "include"
         };
         private static readonly JsonSerializerOptions NativeJsonOptions = new()
         {
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        };
+        private static readonly HashSet<string> SeparatelyHandledOptionFields = new(StringComparer.Ordinal)
+        {
+            "include"
         };
 
         public OpenAIResponseRequest ConvertRequest(UnifiedRequest request)
@@ -43,7 +47,9 @@ namespace LLMAbstraction.Providers.OpenAI
                 Metadata = request.Metadata?.Tags,
                 AdditionalProperties = ProviderOptionMerger.ConvertAdditionalFields(
                     request.ProviderOptions?.OpenAI,
-                    ProtectedRequestFields)
+                    ProtectedRequestFields,
+                    SeparatelyHandledOptionFields),
+                Include = ReadIncludeOptions(request.ProviderOptions?.OpenAI)
             };
 
             if (request.Continuation?.Provider == ProviderIds.OpenAI &&
@@ -52,10 +58,29 @@ namespace LLMAbstraction.Providers.OpenAI
                 openAIRequest.PreviousResponseId = request.Continuation.ResponseId;
             }
 
-            if (request.Tools != null && request.Tools.Any())
+            var convertedTools = request.Tools?.Select(ConvertTool).ToList();
+            if (convertedTools?.Count > 0)
             {
-                openAIRequest.Tools = request.Tools.Select(ConvertTool).ToList();
-                openAIRequest.ToolChoice = ConvertToolChoice(request.ToolChoice);
+                openAIRequest.Tools = convertedTools;
+                openAIRequest.ToolChoice = ConvertToolChoice(request.ToolChoice, request.Tools);
+
+                if (request.Tools!.OfType<ProviderTool>().Any(tool =>
+                    tool.Capability == ProviderToolCapability.WebSearch &&
+                    ((WebSearchOptions)tool.Options).OpenAI?.IncludeAllSources == true))
+                {
+                    openAIRequest.Include ??= new List<string>();
+                    if (!openAIRequest.Include.Contains("web_search_call.action.sources", StringComparer.Ordinal))
+                        openAIRequest.Include.Add("web_search_call.action.sources");
+                }
+
+                if (request.Tools!.OfType<ProviderTool>().Any(tool =>
+                    tool.Capability == ProviderToolCapability.WebSearch &&
+                    ((WebSearchOptions)tool.Options).ContentTypes.HasFlag(WebSearchContentTypes.Image)))
+                {
+                    openAIRequest.Include ??= new List<string>();
+                    if (!openAIRequest.Include.Contains("web_search_call.results", StringComparer.Ordinal))
+                        openAIRequest.Include.Add("web_search_call.results");
+                }
 
                 if (request.ToolChoice?.DisableParallelToolUse != null)
                 {
@@ -100,8 +125,15 @@ namespace LLMAbstraction.Providers.OpenAI
                         {
                             Id = item.CallId ?? item.Id ?? string.Empty,
                             Name = item.Name ?? string.Empty,
-                            Input = DeserializeArguments(item.Arguments)
+                            Input = DeserializeArguments(item.Arguments),
+                            NativeRepresentation = ProviderNativeRepresentation.Create(
+                                ProviderIds.OpenAI,
+                                JsonSerializer.SerializeToElement(item, NativeJsonOptions))
                         });
+                        break;
+
+                    case "web_search_call":
+                        AddWebSearchContent(message, item);
                         break;
                 }
             }
@@ -151,6 +183,82 @@ namespace LLMAbstraction.Providers.OpenAI
                     .Select(item => item.Clone())
                     .ToList()
             };
+        }
+
+        internal static void AddWebSearchContent(UnifiedMessage message, OpenAIOutputItem item)
+        {
+            var native = ProviderNativeRepresentation.Create(
+                ProviderIds.OpenAI,
+                JsonSerializer.SerializeToElement(item, NativeJsonOptions));
+            var action = default(JsonElement);
+            item.ExtensionData?.TryGetValue("action", out action);
+
+            message.Content.Add(new ProviderToolCallContent
+            {
+                Id = item.Id ?? string.Empty,
+                ToolId = "web_search",
+                Capability = ProviderToolCapability.WebSearch,
+                Status = item.Status,
+                Input = action.ValueKind == JsonValueKind.Undefined
+                    ? null
+                    : JsonSerializer.Deserialize<object>(action.GetRawText()),
+                NativeRepresentation = native
+            });
+
+            var sources = ExtractWebSources(action);
+            if (item.ExtensionData?.TryGetValue("results", out var results) == true)
+                sources.AddRange(ExtractWebSources(results));
+            if (item.Status == "completed" || sources.Count > 0)
+            {
+                message.Content.Add(new ProviderToolResultContent
+                {
+                    ToolCallId = item.Id ?? string.Empty,
+                    Capability = ProviderToolCapability.WebSearch,
+                    Status = item.Status,
+                    Output = action.ValueKind == JsonValueKind.Undefined
+                        ? null
+                        : JsonSerializer.Deserialize<object>(action.GetRawText()),
+                    Sources = sources,
+                    NativeRepresentation = native
+                });
+            }
+        }
+
+        private static List<WebSource> ExtractWebSources(JsonElement action)
+        {
+            var result = new List<WebSource>();
+            if (action.ValueKind == JsonValueKind.Array)
+            {
+                AddWebSources(result, action);
+                return result;
+            }
+            if (action.ValueKind != JsonValueKind.Object)
+                return result;
+
+            foreach (var property in new[] { "sources", "results" })
+            {
+                if (!action.TryGetProperty(property, out var sources) || sources.ValueKind != JsonValueKind.Array)
+                    continue;
+                AddWebSources(result, sources);
+            }
+            return result;
+        }
+
+        private static void AddWebSources(List<WebSource> target, JsonElement sources)
+        {
+            foreach (var source in sources.EnumerateArray())
+            {
+                target.Add(new WebSource
+                {
+                    Url = GetString(source, "url") ?? GetString(source, "source_website_url"),
+                    Title = GetString(source, "title") ?? GetString(source, "caption"),
+                    Snippet = GetString(source, "snippet"),
+                    SourceType = GetString(source, "type"),
+                    ImageUrl = GetString(source, "image_url"),
+                    ThumbnailUrl = GetString(source, "thumbnail_url"),
+                    Caption = GetString(source, "caption")
+                });
+            }
         }
 
         private List<object> ConvertInput(UnifiedRequest request)
@@ -351,7 +459,20 @@ namespace LLMAbstraction.Providers.OpenAI
             };
         }
 
-        private static OpenAIResponseTool ConvertTool(ToolDefinition tool)
+        private static OpenAIResponseTool ConvertTool(LLMTool tool)
+        {
+            return tool switch
+            {
+                FunctionTool function => ConvertFunctionTool(function),
+                ProviderTool { Capability: ProviderToolCapability.WebSearch } provider
+                    => ConvertWebSearchTool((WebSearchOptions)provider.Options),
+                ProviderTool provider => throw new NotSupportedException(
+                    $"OpenAI provider tool '{provider.Capability}' is not implemented."),
+                _ => throw new NotSupportedException($"Unknown tool type '{tool.GetType().Name}'.")
+            };
+        }
+
+        private static OpenAIResponseTool ConvertFunctionTool(FunctionTool tool)
         {
             return new OpenAIResponseTool
             {
@@ -363,7 +484,68 @@ namespace LLMAbstraction.Providers.OpenAI
             };
         }
 
-        private static object? ConvertToolChoice(ToolChoice? toolChoice)
+        private static OpenAIResponseTool ConvertWebSearchTool(WebSearchOptions options)
+        {
+            var native = options.OpenAI;
+            var filters = new Dictionary<string, object>();
+            if (options.AllowedDomains?.Count > 0)
+                filters["allowed_domains"] = options.AllowedDomains;
+            if (options.BlockedDomains?.Count > 0)
+                filters["blocked_domains"] = options.BlockedDomains;
+
+            var contentTypes = new List<string>();
+            if (options.ContentTypes.HasFlag(WebSearchContentTypes.Web))
+                contentTypes.Add("text");
+            if (options.ContentTypes.HasFlag(WebSearchContentTypes.Image))
+                contentTypes.Add("image");
+
+            Dictionary<string, object>? imageSettings = null;
+            if (native?.MaximumImageResults != null || native?.IncludeImageCaptions == true)
+            {
+                imageSettings = new Dictionary<string, object>();
+                if (native.MaximumImageResults != null)
+                    imageSettings["max_results"] = native.MaximumImageResults.Value;
+                if (native.IncludeImageCaptions)
+                    imageSettings["caption"] = true;
+            }
+
+            return new OpenAIResponseTool
+            {
+                Type = "web_search",
+                Filters = filters.Count > 0 ? filters : null,
+                UserLocation = ConvertLocation(options.Location),
+                SearchContextSize = native?.ContextSize?.ToString().ToLowerInvariant(),
+                ReturnTokenBudget = native?.UnlimitedReturnTokenBudget == true ? "unlimited" : null,
+                ExternalWebAccess = native != null ? native.ExternalWebAccess : null,
+                SearchContentTypes = contentTypes.Count > 0 ? contentTypes : null,
+                ImageSettings = imageSettings
+            };
+        }
+
+        private static Dictionary<string, object>? ConvertLocation(ApproximateLocation? location)
+        {
+            if (location == null)
+                return null;
+            var result = new Dictionary<string, object> { ["type"] = "approximate" };
+            if (location.City != null) result["city"] = location.City;
+            if (location.Region != null) result["region"] = location.Region;
+            if (location.Country != null) result["country"] = location.Country;
+            if (location.Timezone != null) result["timezone"] = location.Timezone;
+            return result;
+        }
+
+        private static List<string>? ReadIncludeOptions(Dictionary<string, object>? options)
+        {
+            if (options?.TryGetValue("include", out var value) != true)
+                return null;
+            if (value is IEnumerable<string> strings)
+                return strings.ToList();
+            if (value is JsonElement { ValueKind: JsonValueKind.Array } json)
+                return json.EnumerateArray().Select(item => item.GetString() ?? string.Empty).ToList();
+            throw new ArgumentException("OpenAI provider option 'include' must be a collection of strings.");
+        }
+
+        private static object? ConvertToolChoice(ToolChoice? toolChoice, ToolCollection? tools)
         {
             if (toolChoice == null)
                 return null;
@@ -373,6 +555,10 @@ namespace LLMAbstraction.Providers.OpenAI
                 ToolChoiceType.Auto => "auto",
                 ToolChoiceType.None => "none",
                 ToolChoiceType.Required => "required",
+                ToolChoiceType.Specific when tools?.OfType<ProviderTool>().Any(tool =>
+                    tool.Id == toolChoice.ToolName &&
+                    tool.Capability == ProviderToolCapability.WebSearch) == true
+                    => new Dictionary<string, object?> { { "type", "web_search" } },
                 ToolChoiceType.Specific => new Dictionary<string, object?>
                 {
                     { "type", "function" },
@@ -432,7 +618,28 @@ namespace LLMAbstraction.Providers.OpenAI
             {
                 if ((content.Type == "output_text" || content.Type == "text") && content.Text != null)
                 {
-                    var text = new TextContent { Text = content.Text };
+                    var text = new TextContent
+                    {
+                        Text = content.Text,
+                        NativeRepresentation = ProviderNativeRepresentation.Create(
+                            ProviderIds.OpenAI,
+                            JsonSerializer.SerializeToElement(content, NativeJsonOptions))
+                    };
+                    if (content.ExtensionData?.TryGetValue("annotations", out var annotations) == true &&
+                        annotations.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var annotation in annotations.EnumerateArray())
+                        {
+                            text.Citations.Add(new Citation
+                            {
+                                Url = GetString(annotation, "url"),
+                                Title = GetString(annotation, "title"),
+                                StartIndex = GetInt(annotation, "start_index"),
+                                EndIndex = GetInt(annotation, "end_index"),
+                                NativeRepresentation = ProviderNativeRepresentation.Create(ProviderIds.OpenAI, annotation)
+                            });
+                        }
+                    }
                     if (content.ExtensionData != null && content.ExtensionData.Count > 0)
                     {
                         text.ProviderMetadata = content.ExtensionData.ToDictionary(
@@ -476,6 +683,20 @@ namespace LLMAbstraction.Providers.OpenAI
                 _ => JsonSerializer.Serialize(output)
             };
         }
+
+        private static string? GetString(JsonElement element, string property) =>
+            element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty(property, out var value) &&
+            value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+
+        private static int? GetInt(JsonElement element, string property) =>
+            element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty(property, out var value) &&
+            value.TryGetInt32(out var number)
+                ? number
+                : null;
 
         private static FinishReason ConvertFinishReason(OpenAIResponse response, UnifiedMessage message)
         {

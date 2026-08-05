@@ -57,10 +57,11 @@ namespace LLMAbstraction.Providers.Claude
             };
 
             // Convert tools if present
-            if (request.Tools != null && request.Tools.Any())
+            var convertedTools = request.Tools?.Select(ConvertTool).ToList();
+            if (convertedTools?.Count > 0)
             {
-                claudeRequest.Tools = request.Tools.Select(ConvertTool).ToList();
-                claudeRequest.ToolChoice = ConvertToolChoice(request.ToolChoice);
+                claudeRequest.Tools = convertedTools;
+                claudeRequest.ToolChoice = ConvertToolChoice(request.ToolChoice, request.Tools);
             }
 
             // Convert response format if present (Claude native support via output_config)
@@ -113,7 +114,13 @@ namespace LLMAbstraction.Providers.Claude
                     OutputTokens = response.Usage.OutputTokens,
                     TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens,
                     CacheCreationTokens = response.Usage.CacheCreationInputTokens,
-                    CacheReadTokens = response.Usage.CacheReadInputTokens
+                    CacheReadTokens = response.Usage.CacheReadInputTokens,
+                    ProviderMetadata = response.Usage.ServerToolUse != null
+                        ? new Dictionary<string, object>
+                        {
+                            ["claude.serverToolUse"] = response.Usage.ServerToolUse
+                        }
+                        : null
                 },
                 ProviderMetadata = new Dictionary<string, object>
                 {
@@ -307,7 +314,20 @@ namespace LLMAbstraction.Providers.Claude
             throw new NotSupportedException("Claude media content requires a file ID, URL, file URI, or base64 data.");
         }
 
-        private ClaudeTool ConvertTool(ToolDefinition tool)
+        private ClaudeTool ConvertTool(LLMTool tool)
+        {
+            return tool switch
+            {
+                FunctionTool function => ConvertFunctionTool(function),
+                ProviderTool { Capability: ProviderToolCapability.WebSearch } provider
+                    => ConvertWebSearchTool((WebSearchOptions)provider.Options),
+                ProviderTool provider => throw new NotSupportedException(
+                    $"Anthropic provider tool '{provider.Capability}' is not implemented."),
+                _ => throw new NotSupportedException($"Unknown tool type '{tool.GetType().Name}'.")
+            };
+        }
+
+        private ClaudeTool ConvertFunctionTool(FunctionTool tool)
         {
             return new ClaudeTool
             {
@@ -318,7 +338,48 @@ namespace LLMAbstraction.Providers.Claude
             };
         }
 
-        private object? ConvertToolChoice(ToolChoice? toolChoice)
+        private static ClaudeTool ConvertWebSearchTool(WebSearchOptions options)
+        {
+            var native = options.Anthropic;
+            var type = native?.IncludeFullResults != null
+                ? "web_search_20260318"
+                : native?.DynamicFiltering == true
+                    ? "web_search_20260209"
+                    : "web_search_20250305";
+
+            return new ClaudeTool
+            {
+                Type = type,
+                Name = "web_search",
+                MaxUses = native?.MaximumUses,
+                AllowedDomains = options.AllowedDomains,
+                BlockedDomains = options.BlockedDomains,
+                UserLocation = ConvertLocation(options.Location),
+                AllowedCallers = native?.DynamicFiltering == false
+                    ? new List<string> { "direct" }
+                    : null,
+                ResponseInclusion = native?.IncludeFullResults switch
+                {
+                    true => "full",
+                    false => "excluded",
+                    _ => null
+                }
+            };
+        }
+
+        private static Dictionary<string, object>? ConvertLocation(ApproximateLocation? location)
+        {
+            if (location == null)
+                return null;
+            var result = new Dictionary<string, object> { ["type"] = "approximate" };
+            if (location.City != null) result["city"] = location.City;
+            if (location.Region != null) result["region"] = location.Region;
+            if (location.Country != null) result["country"] = location.Country;
+            if (location.Timezone != null) result["timezone"] = location.Timezone;
+            return result;
+        }
+
+        private object? ConvertToolChoice(ToolChoice? toolChoice, ToolCollection? tools)
         {
             if (toolChoice == null)
                 return null;
@@ -331,7 +392,11 @@ namespace LLMAbstraction.Providers.Claude
                 ToolChoiceType.Specific => new
                 {
                     type = "tool",
-                    name = toolChoice.ToolName
+                    name = tools?.OfType<ProviderTool>().Any(tool =>
+                        tool.Id == toolChoice.ToolName &&
+                        tool.Capability == ProviderToolCapability.WebSearch) == true
+                            ? "web_search"
+                            : toolChoice.ToolName
                 },
                 _ => new { type = "auto" }
             };
@@ -361,11 +426,28 @@ namespace LLMAbstraction.Providers.Claude
 
             if (block.Type == "text")
             {
-                return new TextContent
+                var text = new TextContent
                 {
                     Text = block.Text ?? string.Empty,
                     NativeRepresentation = nativeRepresentation
                 };
+                if (block.AdditionalProperties?.TryGetValue("citations", out var citations) == true &&
+                    citations.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var citation in citations.EnumerateArray())
+                    {
+                        text.Citations.Add(new Citation
+                        {
+                            Url = GetString(citation, "url"),
+                            Title = GetString(citation, "title"),
+                            StartIndex = GetInt(citation, "start_index"),
+                            EndIndex = GetInt(citation, "end_index"),
+                            CitedText = GetString(citation, "cited_text"),
+                            NativeRepresentation = ProviderNativeRepresentation.Create(ProviderIds.Claude, citation)
+                        });
+                    }
+                }
+                return text;
             }
 
             if (block.Type == "tool_use")
@@ -375,6 +457,38 @@ namespace LLMAbstraction.Providers.Claude
                     Id = block.Id ?? string.Empty,
                     Name = block.Name ?? string.Empty,
                     Input = block.Input ?? new Dictionary<string, object>(),
+                    NativeRepresentation = nativeRepresentation
+                };
+            }
+
+            if (block.Type == "server_tool_use" && block.Name == "web_search")
+            {
+                return new ProviderToolCallContent
+                {
+                    Id = block.Id ?? string.Empty,
+                    ToolId = "web_search",
+                    Capability = ProviderToolCapability.WebSearch,
+                    Status = "completed",
+                    Input = block.Input,
+                    NativeRepresentation = nativeRepresentation
+                };
+            }
+
+            if (block.Type == "web_search_tool_result")
+            {
+                var resultContent = default(JsonElement);
+                block.AdditionalProperties?.TryGetValue("content", out resultContent);
+                var isError = IsAnthropicToolError(resultContent);
+                return new ProviderToolResultContent
+                {
+                    ToolCallId = block.ToolUseId ?? string.Empty,
+                    Capability = ProviderToolCapability.WebSearch,
+                    Status = isError == true ? "failed" : "completed",
+                    Output = resultContent.ValueKind == JsonValueKind.Undefined
+                        ? null
+                        : JsonSerializer.Deserialize<object>(resultContent.GetRawText()),
+                    IsError = isError,
+                    Sources = ExtractAnthropicSources(resultContent),
                     NativeRepresentation = nativeRepresentation
                 };
             }
@@ -390,6 +504,48 @@ namespace LLMAbstraction.Providers.Claude
         {
             return block.NativeRepresentation?.Provider == ProviderIds.Claude;
         }
+
+        private static List<WebSource> ExtractAnthropicSources(JsonElement content)
+        {
+            var sources = new List<WebSource>();
+            if (content.ValueKind != JsonValueKind.Array)
+                return sources;
+            foreach (var item in content.EnumerateArray())
+            {
+                if (GetString(item, "type") is not ("web_search_result" or "web_search_result_location"))
+                    continue;
+                sources.Add(new WebSource
+                {
+                    Url = GetString(item, "url"),
+                    Title = GetString(item, "title"),
+                    Snippet = GetString(item, "snippet"),
+                    SourceType = GetString(item, "type"),
+                    PageAge = GetString(item, "page_age")
+                });
+            }
+            return sources;
+        }
+
+        private static bool? IsAnthropicToolError(JsonElement content)
+        {
+            if (content.ValueKind != JsonValueKind.Object)
+                return false;
+            return GetString(content, "type") == "web_search_tool_result_error";
+        }
+
+        private static string? GetString(JsonElement element, string property) =>
+            element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty(property, out var value) &&
+            value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+
+        private static int? GetInt(JsonElement element, string property) =>
+            element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty(property, out var value) &&
+            value.TryGetInt32(out var number)
+                ? number
+                : null;
 
         private static bool TryGetClaudeNativeValue(ContentBlock block, out JsonElement value)
         {
@@ -472,6 +628,7 @@ namespace LLMAbstraction.Providers.Claude
                 "max_tokens" => FinishReason.MaxTokens,
                 "stop_sequence" => FinishReason.Stop,
                 "tool_use" => FinishReason.ToolCalls,
+                "pause_turn" => FinishReason.Pause,
                 "refusal" => FinishReason.ContentFilter,
                 "model_context_window_exceeded" => FinishReason.MaxTokens,
                 _ => FinishReason.Other

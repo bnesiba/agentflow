@@ -72,17 +72,41 @@ namespace LLMAbstraction.Providers.Claude.Models
     /// </summary>
     public class ClaudeTool
     {
+        [JsonPropertyName("type")]
+        public string? Type { get; set; }
+
         [JsonPropertyName("name")]
-        public string Name { get; set; } = string.Empty;
+        public string? Name { get; set; }
+
+        [JsonPropertyName("tool_use_id")]
+        public string? ToolUseId { get; set; }
 
         [JsonPropertyName("description")]
-        public string Description { get; set; } = string.Empty;
+        public string? Description { get; set; }
 
         [JsonPropertyName("input_schema")]
-        public Dictionary<string, object> InputSchema { get; set; } = new();
+        public Dictionary<string, object>? InputSchema { get; set; }
 
         [JsonPropertyName("strict")]
         public bool? Strict { get; set; }
+
+        [JsonPropertyName("max_uses")]
+        public int? MaxUses { get; set; }
+
+        [JsonPropertyName("allowed_domains")]
+        public IReadOnlyList<string>? AllowedDomains { get; set; }
+
+        [JsonPropertyName("blocked_domains")]
+        public IReadOnlyList<string>? BlockedDomains { get; set; }
+
+        [JsonPropertyName("user_location")]
+        public Dictionary<string, object>? UserLocation { get; set; }
+
+        [JsonPropertyName("allowed_callers")]
+        public List<string>? AllowedCallers { get; set; }
+
+        [JsonPropertyName("response_inclusion")]
+        public string? ResponseInclusion { get; set; }
     }
 
     /// <summary>
@@ -132,6 +156,9 @@ namespace LLMAbstraction.Providers.Claude.Models
         [JsonPropertyName("name")]
         public string? Name { get; set; }
 
+        [JsonPropertyName("tool_use_id")]
+        public string? ToolUseId { get; set; }
+
         [JsonPropertyName("input")]
         public Dictionary<string, object>? Input { get; set; }
 
@@ -170,6 +197,9 @@ namespace LLMAbstraction.Providers.Claude.Models
 
         [JsonPropertyName("ephemeral_1h_input_tokens")]
         public int? Ephemeral1hInputTokens { get; set; }
+
+        [JsonPropertyName("server_tool_use")]
+        public Dictionary<string, int>? ServerToolUse { get; set; }
     }
 
     /// <summary>

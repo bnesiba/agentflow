@@ -78,6 +78,7 @@ namespace LLMAbstraction.Core.Models
     {
         public override string Type => "text";
         public string Text { get; set; } = string.Empty;
+        public List<Citation> Citations { get; set; } = new();
     }
 
     /// <summary>
@@ -151,5 +152,58 @@ namespace LLMAbstraction.Core.Models
         public string? ToolName { get; set; }
         public object? Output { get; set; } = string.Empty;
         public bool? IsError { get; set; }
+    }
+
+    /// <summary>
+    /// Observable invocation of a provider-native tool. Unlike a function call,
+    /// this does not imply that the application must execute it.
+    /// </summary>
+    public sealed class ProviderToolCallContent : ContentBlock
+    {
+        public override string Type => "provider_tool_call";
+        public string Id { get; set; } = string.Empty;
+        public string ToolId { get; set; } = string.Empty;
+        public ProviderToolCapability Capability { get; set; }
+        public string? Status { get; set; }
+        public object? Input { get; set; }
+    }
+
+    /// <summary>
+    /// Observable result of a provider-native tool execution.
+    /// </summary>
+    public sealed class ProviderToolResultContent : ContentBlock
+    {
+        public override string Type => "provider_tool_result";
+        public string ToolCallId { get; set; } = string.Empty;
+        public ProviderToolCapability Capability { get; set; }
+        public string? Status { get; set; }
+        public object? Output { get; set; }
+        public bool? IsError { get; set; }
+        public List<WebSource> Sources { get; set; } = new();
+        public string? SearchSuggestionsHtml { get; set; }
+    }
+
+    public sealed class WebSource
+    {
+        public string? Url { get; set; }
+        public string? Title { get; set; }
+        public string? Snippet { get; set; }
+        public string? SourceType { get; set; }
+        public string? ImageUrl { get; set; }
+        public string? ThumbnailUrl { get; set; }
+        public string? Caption { get; set; }
+        public string? PageAge { get; set; }
+    }
+
+    public sealed class Citation
+    {
+        public string? Url { get; set; }
+        public string? Title { get; set; }
+        public string? FileName { get; set; }
+        public int? PageNumber { get; set; }
+        public int? StartIndex { get; set; }
+        public int? EndIndex { get; set; }
+        public string? CitedText { get; set; }
+        public ProviderNativeRepresentation? NativeRepresentation { get; set; }
     }
 }

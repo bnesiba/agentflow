@@ -186,6 +186,18 @@ namespace LLMAbstraction.Providers.OpenAI
             switch (streamEvent.Type)
             {
                 case "response.output_item.added":
+                    if (streamEvent.Item?.Type == "web_search_call")
+                    {
+                        var searchMessage = new UnifiedMessage(MessageRole.Assistant, new List<ContentBlock>());
+                        OpenAIConverter.AddWebSearchContent(searchMessage, streamEvent.Item);
+                        return new StreamChunk
+                        {
+                            Id = state.ResponseId,
+                            Model = state.Model,
+                            ChoiceIndex = streamEvent.OutputIndex ?? 0,
+                            Delta = new StreamDelta { ContentBlocks = searchMessage.Content }
+                        };
+                    }
                     if (streamEvent.Item?.Type != "function_call")
                         return null;
 

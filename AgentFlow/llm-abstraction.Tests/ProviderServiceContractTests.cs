@@ -45,10 +45,10 @@ public sealed class ProviderServiceContractTests
     }
 
     [Fact]
-    public async Task GeminiUsesGenerateContentEndpointAndApiKeyHeaderNotQueryString()
+    public async Task GeminiUsesInteractionsEndpointAndApiKeyHeaderNotQueryString()
     {
         const string response = """
-        {"responseId":"gem_1","modelVersion":"gemini-3.5-flash","candidates":[{"index":0,"finishReason":"STOP","content":{"role":"model","parts":[{"text":"Hi"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}
+        {"id":"gem_1","model":"gemini-3.5-flash","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"Hi"}]}],"usage":{"total_input_tokens":1,"total_output_tokens":1,"total_tokens":2}}
         """;
         var handler = new TestHttpMessageHandler(response);
         using var client = new HttpClient(handler)
@@ -60,10 +60,12 @@ public sealed class ProviderServiceContractTests
         await service.GenerateAsync(Request("gemini-3.5-flash"));
 
         Assert.Equal(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/interactions",
             handler.LastRequest!.RequestUri!.ToString());
         Assert.DoesNotContain("gemini-key", handler.LastRequest.RequestUri.Query);
         Assert.Equal("gemini-key", Assert.Single(handler.LastRequest.Headers.GetValues("x-goog-api-key")));
+        Assert.Contains("\"store\":false", handler.LastRequestBody);
+        Assert.Contains("\"type\":\"user_input\"", handler.LastRequestBody);
     }
 
     private static UnifiedRequest Request(string model) => new()

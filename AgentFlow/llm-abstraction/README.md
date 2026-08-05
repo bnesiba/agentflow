@@ -4,9 +4,9 @@ A .NET 8 abstraction over these HTTP APIs:
 
 - Anthropic Claude Messages API (`POST /v1/messages`)
 - OpenAI Responses API (`POST /v1/responses`)
-- Google Gemini `generateContent` and `streamGenerateContent`
+- Google Gemini Interactions API, with a `generateContent` compatibility path
 
-The portable subset covers text, images/files, custom function tools, structured output, reasoning controls, and streaming. Provider-native state is retained where it is required for correct multi-turn continuation.
+The portable subset covers text, images/files, custom function tools, provider-native Web Search, structured output, reasoning controls, and streaming. Provider-native state is retained where it is required for correct multi-turn continuation.
 
 ## Compatibility status
 
@@ -23,12 +23,13 @@ The portable subset covers text, images/files, custom function tools, structured
 | JSON Schema output | Provider schema subset | Provider schema subset | Provider schema subset |
 | Reasoning controls | Manual/adaptive subset | Effort/summary subset | Budget/level subset |
 | Native reasoning continuation | Preserved | Preserved | Preserved |
-| Built-in provider tools | Not modeled | Not modeled | Not modeled |
-| Provider-native citations/grounding | Retained natively/metadata | Retained natively/metadata | Retained in metadata |
+| Provider-native Web Search | Supported | Supported | Supported |
+| Search calls/results | Portable + native | Portable + native | Portable + native |
+| Citations/grounding | Portable + native | Portable + native | Portable + native |
 
 Model capabilities and accepted schema keywords remain model-dependent. The provider API is the final authority for model-specific validation.
 
-Google now recommends its Interactions API for the newest agentic features. This library currently uses the still-supported, legacy `generateContent` API.
+Gemini uses the Interactions API by default. A Web Search time-range filter automatically uses the legacy `generateContent` endpoint because that control is not exposed by Interactions.
 
 ## Basic usage
 
@@ -98,6 +99,8 @@ Portable content includes:
 - `MediaContent`
 - `ToolCallContent`
 - `ToolResultContent`
+- `ProviderToolCallContent`
+- `ProviderToolResultContent`
 - `ProviderNativeContent`
 
 `ProviderNativeContent` and `NativeRepresentation` carry opaque signed or future provider blocks. Native content is provider-bound and cannot be sent to a different provider.
@@ -132,6 +135,43 @@ request.ToolChoice = new ToolChoice { Type = ToolChoiceType.Auto };
 Tool choice types are `Auto`, `None`, `Required`, and `Specific`. `Specific` requires a valid `ToolName`.
 
 Claude thinking cannot be combined with forced (`Required` or `Specific`) tool choice. Validation rejects this combination before the HTTP call.
+
+## Provider-native Web Search
+
+Function tools and provider-native tools share one collection but have different execution ownership. Your application executes a `FunctionTool`; Anthropic, OpenAI, or Gemini executes a `ProviderTool` on its own infrastructure.
+
+```csharp
+request.Tools = new ToolCollection
+{
+    weather,
+    ProviderTools.WebSearch(new WebSearchOptions
+    {
+        AllowedDomains = new[] { "example.com" },
+        Location = new ApproximateLocation
+        {
+            Country = "US",
+            City = "Boston",
+            Region = "Massachusetts"
+        }
+    })
+};
+```
+
+The same `ProviderTools.WebSearch(...)` declaration maps to Anthropic `web_search`, OpenAI Responses `web_search`, or Gemini `google_search`. Portable controls are enforced only when the selected provider supports them:
+
+| Control | Claude | OpenAI | Gemini |
+|---|---|---|---|
+| Allowed domains | Supported | Supported | Rejected as unsupported |
+| Blocked domains | Supported | Supported | Rejected as unsupported |
+| Approximate location | Supported | Supported | Rejected as unsupported |
+| Web results | Supported | Supported | Supported |
+| Image results | Rejected as unsupported | Supported | Supported |
+
+Provider-specific controls remain typed and isolated under `WebSearchOptions.Anthropic`, `.OpenAI`, and `.Gemini`. These include Anthropic maximum uses/dynamic filtering/full-result inclusion, OpenAI context size/source inclusion/live-web access/token budget/image settings, and Gemini start/end time. Gemini time ranges require both endpoints, must be ordered, and trigger the `generateContent` compatibility path automatically.
+
+Provider-managed search activity appears as `ProviderToolCallContent` and `ProviderToolResultContent`; it never appears as `ToolCallContent`, so callers do not accidentally execute it. Results expose portable `WebSource` objects and Gemini search-suggestion markup. Text citations are exposed through `TextContent.Citations`. Every projection also retains its native provider JSON for provider-specific fields and correct continuation.
+
+Applications that display grounded answers remain responsible for rendering the returned citations and any provider-required attribution UI. In particular, preserve and render Gemini's `SearchSuggestionsHtml` when applicable. Anthropic may return `FinishReason.Pause` during a long server-tool turn; continue by replaying the returned assistant message unchanged with the same tool definition.
 
 ### Returning tool results
 
@@ -370,10 +410,10 @@ The raw response and parsed provider detail JSON remain available for diagnostic
 
 ## Known portability limits
 
-- Provider built-in tools are not represented by `ToolDefinition`; extend the native DTOs before using them. The protected `tools` request field cannot be replaced through provider options.
+- Web Search is the first modeled provider-native tool. Other built-in tools are not yet exposed through `ProviderTools`.
+- Web Search option parity is intentionally limited to controls the selected provider can enforce. Unsupported portable constraints fail validation instead of being ignored.
 - Prompt-cache breakpoints and all cache-control strategies are not portable. Claude cache usage metrics are preserved.
-- Provider citations, grounding, refusals, and safety fields do not share one universal schema. Common information is exposed where possible and native metadata is retained.
-- Gemini's newer Interactions API is not yet implemented.
+- Provider citations, search results, grounding, refusals, and safety fields do not share one universal schema. Common information is exposed where possible and native metadata is retained.
 - Schema support and reasoning controls vary by model.
 - Provider-native continuation state cannot be moved between providers.
 - This layer does not implement retries, rate limiting, batch requests, token counting, embeddings, realtime audio, or media generation.
@@ -390,6 +430,8 @@ The `LLMAbstraction.Tests` project contains deterministic contract tests for:
 - Images and files
 - Structured output and reasoning
 - Tool calls and tool results
+- Mixed function/provider tools and Web Search option translation
+- Search calls, results, sources, images, suggestions, and citations
 - Streaming SSE lifecycles
 - Provider-native continuation round trips
 - Cross-provider isolation

@@ -181,7 +181,37 @@ namespace LLMAbstraction.Providers.Gemini.Models
     public class GeminiTool
     {
         [JsonPropertyName("functionDeclarations")]
-        public List<GeminiFunctionDeclaration> FunctionDeclarations { get; set; } = new();
+        public List<GeminiFunctionDeclaration>? FunctionDeclarations { get; set; }
+
+        [JsonPropertyName("googleSearch")]
+        public GeminiGoogleSearch? GoogleSearch { get; set; }
+    }
+
+    public sealed class GeminiGoogleSearch
+    {
+        [JsonPropertyName("timeRangeFilter")]
+        public GeminiTimeRangeFilter? TimeRangeFilter { get; set; }
+
+        [JsonPropertyName("searchTypes")]
+        public GeminiSearchTypes? SearchTypes { get; set; }
+    }
+
+    public sealed class GeminiTimeRangeFilter
+    {
+        [JsonPropertyName("startTime")]
+        public string StartTime { get; set; } = string.Empty;
+
+        [JsonPropertyName("endTime")]
+        public string EndTime { get; set; } = string.Empty;
+    }
+
+    public sealed class GeminiSearchTypes
+    {
+        [JsonPropertyName("webSearch")]
+        public Dictionary<string, object>? WebSearch { get; set; }
+
+        [JsonPropertyName("imageSearch")]
+        public Dictionary<string, object>? ImageSearch { get; set; }
     }
 
     /// <summary>
@@ -257,6 +287,9 @@ namespace LLMAbstraction.Providers.Gemini.Models
 
         [JsonPropertyName("safetyRatings")]
         public List<GeminiSafetyRating>? SafetyRatings { get; set; }
+
+        [JsonPropertyName("groundingMetadata")]
+        public JsonElement? GroundingMetadata { get; set; }
     }
 
     /// <summary>

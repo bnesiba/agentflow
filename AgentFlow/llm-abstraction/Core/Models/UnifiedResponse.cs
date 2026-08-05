@@ -77,6 +77,7 @@ namespace LLMAbstraction.Core.Models
         Stop,          // Natural stop
         MaxTokens,     // Hit token limit
         ToolCalls,     // Stopped to execute tools
+        Pause,         // Provider paused a server-managed turn; replay the assistant response
         ContentFilter, // Content filtered
         Error,         // Error occurred
         Other          // Other/unknown reason
@@ -109,5 +110,6 @@ namespace LLMAbstraction.Core.Models
         public int? ReasoningTokens { get; set; }
         public int? CacheCreationTokens { get; set; }
         public int? CacheReadTokens { get; set; }
+        public Dictionary<string, object>? ProviderMetadata { get; set; }
     }
 }

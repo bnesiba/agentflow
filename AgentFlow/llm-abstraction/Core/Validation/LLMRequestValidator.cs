@@ -40,6 +40,7 @@ namespace LLMAbstraction.Core.Validation
         public required LLMProvider Provider { get; init; }
         public bool SupportsStreaming { get; init; }
         public bool SupportsCustomTools { get; init; }
+        public bool SupportsWebSearch { get; init; }
         public bool SupportsParallelToolCalls { get; init; }
         public bool SupportsImages { get; init; }
         public bool SupportsDocuments { get; init; }
@@ -60,6 +61,7 @@ namespace LLMAbstraction.Core.Validation
                     Provider = provider,
                     SupportsStreaming = true,
                     SupportsCustomTools = true,
+                    SupportsWebSearch = true,
                     SupportsParallelToolCalls = true,
                     SupportsImages = true,
                     SupportsDocuments = true,
@@ -73,6 +75,7 @@ namespace LLMAbstraction.Core.Validation
                     Provider = provider,
                     SupportsStreaming = true,
                     SupportsCustomTools = true,
+                    SupportsWebSearch = true,
                     SupportsParallelToolCalls = true,
                     SupportsImages = true,
                     SupportsDocuments = true,
@@ -86,6 +89,7 @@ namespace LLMAbstraction.Core.Validation
                     Provider = provider,
                     SupportsStreaming = true,
                     SupportsCustomTools = true,
+                    SupportsWebSearch = true,
                     SupportsParallelToolCalls = true,
                     SupportsImages = true,
                     SupportsDocuments = true,
@@ -137,6 +141,7 @@ namespace LLMAbstraction.Core.Validation
                 "request.top_k.range", "TopK must be greater than zero.", "Parameters.TopK");
 
             ValidateTools(request, diagnostics);
+            ValidateProviderTools(request, provider, diagnostics);
             ValidateResponseFormat(request, diagnostics);
             ValidateProviderRules(request, provider, diagnostics);
 
@@ -167,16 +172,17 @@ namespace LLMAbstraction.Core.Validation
             UnifiedRequest request,
             List<RequestDiagnostic> diagnostics)
         {
-            var tools = request.Tools ?? new List<ToolDefinition>();
-            for (var index = 0; index < tools.Count; index++)
+            var tools = request.Tools ?? new ToolCollection();
+            var functionTools = tools.OfType<FunctionTool>().ToList();
+            for (var index = 0; index < functionTools.Count; index++)
             {
-                AddErrorIf(diagnostics, string.IsNullOrWhiteSpace(tools[index].Name),
+                AddErrorIf(diagnostics, string.IsNullOrWhiteSpace(functionTools[index].Name),
                     "request.tool.name_required", "Every tool requires a name.", $"Tools[{index}].Name");
-                AddErrorIf(diagnostics, tools[index].Parameters.Count == 0,
-                    "request.tool.schema_required", $"Tool '{tools[index].Name}' requires a JSON input schema.", $"Tools[{index}].Parameters");
+                AddErrorIf(diagnostics, functionTools[index].Parameters.Count == 0,
+                    "request.tool.schema_required", $"Tool '{functionTools[index].Name}' requires a JSON input schema.", $"Tools[{index}].Parameters");
             }
 
-            foreach (var duplicate in tools
+            foreach (var duplicate in functionTools
                 .Where(tool => !string.IsNullOrWhiteSpace(tool.Name))
                 .GroupBy(tool => tool.Name, StringComparer.Ordinal)
                 .Where(group => group.Count() > 1))
@@ -187,6 +193,15 @@ namespace LLMAbstraction.Core.Validation
                     "Tools"));
             }
 
+            foreach (var providerTool in tools.OfType<ProviderTool>())
+            {
+                AddErrorIf(diagnostics,
+                    functionTools.Any(function => function.Name == providerTool.Id),
+                    "request.tool.identity_duplicate",
+                    $"Tool identity '{providerTool.Id}' is shared by a function tool and a provider-native tool.",
+                    "Tools");
+            }
+
             if (request.ToolChoice?.Type == ToolChoiceType.Specific)
             {
                 AddErrorIf(diagnostics, string.IsNullOrWhiteSpace(request.ToolChoice.ToolName),
@@ -195,7 +210,8 @@ namespace LLMAbstraction.Core.Validation
                     "ToolChoice.ToolName");
                 AddErrorIf(diagnostics,
                     !string.IsNullOrWhiteSpace(request.ToolChoice.ToolName) &&
-                    tools.All(tool => tool.Name != request.ToolChoice.ToolName),
+                    functionTools.All(tool => tool.Name != request.ToolChoice.ToolName) &&
+                    tools.All(tool => tool.Id != request.ToolChoice.ToolName),
                     "request.tool_choice.name_unknown",
                     $"Specific tool '{request.ToolChoice.ToolName}' is not present in Tools.",
                     "ToolChoice.ToolName");
@@ -219,6 +235,160 @@ namespace LLMAbstraction.Core.Validation
                     "request.response_schema.empty",
                     "Response JSON Schema cannot be empty.",
                     "ResponseFormat.JsonSchema.Schema");
+            }
+        }
+
+        private static void ValidateProviderTools(
+            UnifiedRequest request,
+            LLMProvider provider,
+            List<RequestDiagnostic> diagnostics)
+        {
+            var providerTools = request.Tools?.OfType<ProviderTool>().ToList() ?? new();
+            foreach (var tool in providerTools)
+            {
+                AddErrorIf(diagnostics, string.IsNullOrWhiteSpace(tool.Id),
+                    "request.provider_tool.id_required",
+                    "Every provider-native tool requires a stable ID.",
+                    "Tools.Id");
+
+                if (tool.Capability != ProviderToolCapability.WebSearch)
+                    continue;
+
+                if (tool.Options is not WebSearchOptions options)
+                {
+                    diagnostics.Add(Error(
+                        "request.web_search.options_type",
+                        "Web Search requires WebSearchOptions.",
+                        "Tools.Options"));
+                    continue;
+                }
+
+                AddErrorIf(diagnostics,
+                    options.ContentTypes == 0 ||
+                    (options.ContentTypes & ~(WebSearchContentTypes.Web | WebSearchContentTypes.Image)) != 0,
+                    "request.web_search.content_types",
+                    "Web Search requires at least one recognized content type.",
+                    "Tools.Options.ContentTypes");
+
+                ValidateDomains(options.AllowedDomains, "AllowedDomains", diagnostics);
+                ValidateDomains(options.BlockedDomains, "BlockedDomains", diagnostics);
+
+                if (options.Location != null && provider is LLMProvider.Claude or LLMProvider.OpenAI)
+                {
+                    AddErrorIf(diagnostics,
+                        string.IsNullOrWhiteSpace(options.Location.City) &&
+                        string.IsNullOrWhiteSpace(options.Location.Region) &&
+                        string.IsNullOrWhiteSpace(options.Location.Country) &&
+                        string.IsNullOrWhiteSpace(options.Location.Timezone),
+                        "request.web_search.location_empty",
+                        "Approximate Web Search location requires at least one location field.",
+                        "Tools.Options.Location");
+                    AddErrorIf(diagnostics,
+                        options.Location.Country != null && options.Location.Country.Length != 2,
+                        "request.web_search.location_country",
+                        "Approximate Web Search country must be a two-letter ISO country code.",
+                        "Tools.Options.Location.Country");
+                }
+
+                if (provider == LLMProvider.Claude)
+                {
+                    AddErrorIf(diagnostics,
+                        options.AllowedDomains?.Count > 0 && options.BlockedDomains?.Count > 0,
+                        "claude.web_search.domain_filters_conflict",
+                        "Anthropic Web Search accepts allowed domains or blocked domains, not both.",
+                        "Tools.Options");
+                    AddErrorIf(diagnostics,
+                        options.ContentTypes.HasFlag(WebSearchContentTypes.Image),
+                        "claude.web_search.image_unsupported",
+                        "Anthropic Web Search does not expose portable image search.",
+                        "Tools.Options.ContentTypes");
+                    AddErrorIf(diagnostics, options.Anthropic?.MaximumUses <= 0,
+                        "claude.web_search.max_uses",
+                        "Anthropic Web Search MaximumUses must be greater than zero.",
+                        "Tools.Options.Anthropic.MaximumUses");
+                }
+
+                if (provider == LLMProvider.OpenAI)
+                {
+                    AddErrorIf(diagnostics,
+                        options.AllowedDomains?.Any(domain => domain.Contains('/')) == true ||
+                        options.BlockedDomains?.Any(domain => domain.Contains('/')) == true,
+                        "openai.web_search.domain_path_unsupported",
+                        "OpenAI Web Search filters accept bare domains without URL paths.",
+                        "Tools.Options");
+                    AddErrorIf(diagnostics,
+                        (options.AllowedDomains?.Count ?? 0) > 100 ||
+                        (options.BlockedDomains?.Count ?? 0) > 100,
+                        "openai.web_search.domain_limit",
+                        "OpenAI Web Search accepts at most 100 allowed or blocked domains.",
+                        "Tools.Options");
+                    AddErrorIf(diagnostics, options.OpenAI?.MaximumImageResults <= 0,
+                        "openai.web_search.max_image_results",
+                        "OpenAI MaximumImageResults must be greater than zero.",
+                        "Tools.Options.OpenAI.MaximumImageResults");
+                }
+
+                if (provider == LLMProvider.Gemini)
+                {
+                    AddErrorIf(diagnostics, options.AllowedDomains?.Count > 0,
+                        "gemini.web_search.allowed_domains_unsupported",
+                        "Gemini Google Search cannot enforce allowed-domain restrictions.",
+                        "Tools.Options.AllowedDomains");
+                    AddErrorIf(diagnostics, options.BlockedDomains?.Count > 0,
+                        "gemini.web_search.blocked_domains_unsupported",
+                        "Gemini Google Search cannot enforce blocked-domain restrictions.",
+                        "Tools.Options.BlockedDomains");
+                    AddErrorIf(diagnostics, options.Location != null,
+                        "gemini.web_search.location_unsupported",
+                        "Gemini Google Search does not expose an approximate-location option.",
+                        "Tools.Options.Location");
+
+                    var start = options.Gemini?.StartTime;
+                    var end = options.Gemini?.EndTime;
+                    AddErrorIf(diagnostics, (start == null) != (end == null),
+                        "gemini.web_search.time_range_pair",
+                        "Gemini Web Search requires both StartTime and EndTime.",
+                        "Tools.Options.Gemini");
+                    AddErrorIf(diagnostics, start != null && end != null && start >= end,
+                        "gemini.web_search.time_range_order",
+                        "Gemini Web Search StartTime must be earlier than EndTime.",
+                        "Tools.Options.Gemini");
+                    AddErrorIf(diagnostics,
+                        start != null && end != null &&
+                        request.ToolChoice != null && request.ToolChoice.Type != ToolChoiceType.Auto,
+                        "gemini.web_search.time_range_tool_choice_unsupported",
+                        "Gemini's generateContent time-range compatibility path cannot faithfully enforce portable Web Search tool choice.",
+                        "ToolChoice.Type");
+                }
+            }
+
+            foreach (var duplicate in providerTools
+                .Where(tool => !string.IsNullOrWhiteSpace(tool.Id))
+                .GroupBy(tool => tool.Id, StringComparer.Ordinal)
+                .Where(group => group.Count() > 1))
+            {
+                diagnostics.Add(Error(
+                    "request.provider_tool.id_duplicate",
+                    $"Provider-native tool ID '{duplicate.Key}' is defined more than once.",
+                    "Tools"));
+            }
+        }
+
+        private static void ValidateDomains(
+            IReadOnlyList<string>? domains,
+            string property,
+            List<RequestDiagnostic> diagnostics)
+        {
+            if (domains == null)
+                return;
+            foreach (var domain in domains)
+            {
+                AddErrorIf(diagnostics,
+                    string.IsNullOrWhiteSpace(domain) ||
+                    domain.Contains("://", StringComparison.Ordinal),
+                    "request.web_search.domain_format",
+                    "Web Search domains must be non-empty and omit the URL scheme.",
+                    $"Tools.Options.{property}");
             }
         }
 
@@ -301,7 +471,7 @@ namespace LLMAbstraction.Core.Validation
                     "gemini.parallel_tool_control.unmapped",
                     "Gemini DisableParallelToolUse is not mapped by the portable tool-choice converter.",
                     "ToolChoice.DisableParallelToolUse");
-                AddWarningIf(diagnostics, request.Tools?.Any(tool => tool.Strict != null) == true,
+                AddWarningIf(diagnostics, request.Tools?.OfType<FunctionTool>().Any(tool => tool.Strict != null) == true,
                     "gemini.tool_strict.unmapped",
                     "Gemini tool Strict values are not represented by this generateContent function declaration.",
                     "Tools.Strict");

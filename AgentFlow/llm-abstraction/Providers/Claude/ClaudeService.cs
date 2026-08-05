@@ -239,26 +239,29 @@ namespace LLMAbstraction.Providers.Claude
                             {
                                 contentBlocks.TryGetValue(delta.Index, out var block);
                                 block?.PartialJson.Append(delta.Delta.PartialJson);
-                                yield return new StreamChunk
+                                if (block?.Block.Type == "tool_use")
                                 {
-                                    Id = messageId ?? string.Empty,
-                                    Model = model ?? string.Empty,
-                                    ChoiceIndex = 0,
-                                    Delta = new StreamDelta
+                                    yield return new StreamChunk
                                     {
-                                        ToolCalls = new List<ToolCallDelta>
+                                        Id = messageId ?? string.Empty,
+                                        Model = model ?? string.Empty,
+                                        ChoiceIndex = 0,
+                                        Delta = new StreamDelta
                                         {
-                                            new ToolCallDelta
+                                            ToolCalls = new List<ToolCallDelta>
                                             {
-                                                Index = delta.Index,
-                                                Id = block?.Block.Id,
-                                                Name = block?.Block.Name,
-                                                Arguments = delta.Delta.PartialJson,
-                                                Type = "tool_use"
+                                                new ToolCallDelta
+                                                {
+                                                    Index = delta.Index,
+                                                    Id = block.Block.Id,
+                                                    Name = block.Block.Name,
+                                                    Arguments = delta.Delta.PartialJson,
+                                                    Type = "tool_use"
+                                                }
                                             }
                                         }
-                                    }
-                                };
+                                    };
+                                }
                             }
                             else if (delta?.Delta?.Thinking != null || delta?.Delta?.Signature != null)
                             {
@@ -336,6 +339,7 @@ namespace LLMAbstraction.Providers.Claude
                                     "max_tokens" => FinishReason.MaxTokens,
                                     "stop_sequence" => FinishReason.Stop,
                                     "tool_use" => FinishReason.ToolCalls,
+                                    "pause_turn" => FinishReason.Pause,
                                     "refusal" => FinishReason.ContentFilter,
                                     "model_context_window_exceeded" => FinishReason.MaxTokens,
                                     _ => FinishReason.Other
@@ -371,7 +375,10 @@ namespace LLMAbstraction.Providers.Claude
                 OutputTokens = outputTokens,
                 TotalTokens = inputTokens + outputTokens,
                 CacheCreationTokens = initial?.CacheCreationInputTokens ?? final?.CacheCreationInputTokens,
-                CacheReadTokens = initial?.CacheReadInputTokens ?? final?.CacheReadInputTokens
+                CacheReadTokens = initial?.CacheReadInputTokens ?? final?.CacheReadInputTokens,
+                ProviderMetadata = (final?.ServerToolUse ?? initial?.ServerToolUse) is { } serverToolUse
+                    ? new Dictionary<string, object> { ["claude.serverToolUse"] = serverToolUse }
+                    : null
             };
         }
 
@@ -402,7 +409,7 @@ namespace LLMAbstraction.Providers.Claude
                     Block.Thinking = Thinking.ToString();
                     Block.Signature = Signature.ToString();
                 }
-                else if (Block.Type == "tool_use" && PartialJson.Length > 0)
+                else if (Block.Type is "tool_use" or "server_tool_use" && PartialJson.Length > 0)
                 {
                     Block.Input = JsonSerializer.Deserialize<Dictionary<string, object>>(
                         PartialJson.ToString()) ?? new Dictionary<string, object>();

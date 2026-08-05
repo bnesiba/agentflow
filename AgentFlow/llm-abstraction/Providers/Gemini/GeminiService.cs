@@ -15,6 +15,12 @@ using LLMAbstraction.Providers.Gemini.Models;
 
 namespace LLMAbstraction.Providers.Gemini
 {
+    public enum GeminiApiMode
+    {
+        Interactions,
+        GenerateContent
+    }
+
     /// <summary>
     /// Service for interacting with Gemini API
     /// </summary>
@@ -22,14 +28,21 @@ namespace LLMAbstraction.Providers.Gemini
     {
         private readonly HttpClient _httpClient;
         private readonly GeminiConverter _converter;
+        private readonly GeminiInteractionsConverter _interactionsConverter;
+        private readonly GeminiApiMode _apiMode;
         private readonly string _apiKey;
         private readonly string _baseUrl;
 
-        public GeminiService(string apiKey, string? baseUrl = null)
+        public GeminiService(
+            string apiKey,
+            string? baseUrl = null,
+            GeminiApiMode apiMode = GeminiApiMode.Interactions)
         {
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
             _baseUrl = baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
             _converter = new GeminiConverter();
+            _interactionsConverter = new GeminiInteractionsConverter();
+            _apiMode = apiMode;
             
             _httpClient = new HttpClient
             {
@@ -41,13 +54,17 @@ namespace LLMAbstraction.Providers.Gemini
         public GeminiService(
             HttpClient httpClient, 
             string apiKey,
-            GeminiConverter? converter = null)
+            GeminiConverter? converter = null,
+            GeminiApiMode apiMode = GeminiApiMode.Interactions,
+            GeminiInteractionsConverter? interactionsConverter = null)
         {
             _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
             _baseUrl = httpClient.BaseAddress?.ToString() ?? 
                 "https://generativelanguage.googleapis.com/v1beta";
             _converter = converter ?? new GeminiConverter();
+            _interactionsConverter = interactionsConverter ?? new GeminiInteractionsConverter();
+            _apiMode = apiMode;
             _httpClient.BaseAddress = CreateBaseAddress(_baseUrl);
             ConfigureHeaders();
         }
@@ -56,6 +73,9 @@ namespace LLMAbstraction.Providers.Gemini
             UnifiedRequest request, 
             CancellationToken cancellationToken = default)
         {
+            if (_apiMode == GeminiApiMode.Interactions && !RequiresGenerateContent(request))
+                return await GenerateInteractionAsync(request, cancellationToken);
+
             // Convert unified request to Gemini format
             var geminiRequest = _converter.ConvertRequest(request);
 
@@ -104,6 +124,13 @@ namespace LLMAbstraction.Providers.Gemini
             UnifiedRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            if (_apiMode == GeminiApiMode.Interactions && !RequiresGenerateContent(request))
+            {
+                await foreach (var chunk in StreamInteractionAsync(request, cancellationToken))
+                    yield return chunk;
+                yield break;
+            }
+
             // Convert unified request to Gemini format
             var geminiRequest = _converter.ConvertRequest(request);
 
@@ -237,6 +264,14 @@ namespace LLMAbstraction.Providers.Gemini
                 }
             }
 
+            var contentCountBeforeGrounding = accumulatedMessage.Content.Count;
+            GeminiConverter.ProjectGroundingMetadata(
+                candidate.GroundingMetadata,
+                accumulatedMessage,
+                $"google_search_{candidate.Index}");
+            foreach (var groundingBlock in accumulatedMessage.Content.Skip(contentCountBeforeGrounding))
+                delta.ContentBlocks.Add(groundingBlock);
+
             delta.Content = text.Length > 0 ? text.ToString() : null;
             if (delta.ContentBlocks.Count == 0)
                 delta.ContentBlocks = null;
@@ -300,6 +335,194 @@ namespace LLMAbstraction.Providers.Gemini
         {
             if (!_httpClient.DefaultRequestHeaders.Contains("x-goog-api-key"))
                 _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("x-goog-api-key", _apiKey);
+        }
+
+        private async Task<UnifiedResponse> GenerateInteractionAsync(
+            UnifiedRequest request,
+            CancellationToken cancellationToken)
+        {
+            var nativeRequest = _interactionsConverter.ConvertRequest(request);
+            var content = SerializeContent(nativeRequest);
+            using var response = await _httpClient.PostAsync("interactions", content, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                throw ProviderErrorParser.Create(LLMProvider.Gemini, response, errorContent);
+            }
+
+            var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
+            var interaction = JsonSerializer.Deserialize<GeminiInteractionResponse>(responseJson, JsonOptions());
+            if (interaction == null)
+                throw new InvalidOperationException("Failed to deserialize Gemini Interactions response");
+
+            var unified = _interactionsConverter.ConvertResponse(interaction);
+            if (nativeRequest.Store && unified.Continuation != null)
+            {
+                unified.Continuation.Mode = ContinuationMode.ServerManaged;
+                unified.Continuation.NativeItems.Clear();
+            }
+            return unified;
+        }
+
+        private async IAsyncEnumerable<StreamChunk> StreamInteractionAsync(
+            UnifiedRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            var nativeRequest = _interactionsConverter.ConvertRequest(request);
+            nativeRequest.Stream = true;
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "interactions")
+            {
+                Content = SerializeContent(nativeRequest)
+            };
+            using var response = await _httpClient.SendAsync(
+                httpRequest,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                throw ProviderErrorParser.Create(LLMProvider.Gemini, response, errorContent);
+            }
+
+            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var reader = new StreamReader(stream);
+            while (!reader.EndOfStream)
+            {
+                var line = await reader.ReadLineAsync(cancellationToken);
+                if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: ", StringComparison.Ordinal))
+                    continue;
+
+                GeminiInteractionStreamEvent? streamEvent;
+                try
+                {
+                    streamEvent = JsonSerializer.Deserialize<GeminiInteractionStreamEvent>(
+                        line.Substring(6),
+                        JsonOptions());
+                }
+                catch (JsonException exception)
+                {
+                    throw new InvalidOperationException(
+                        "Failed to deserialize a Gemini Interactions streaming response event.",
+                        exception);
+                }
+
+                if (streamEvent == null)
+                    continue;
+
+                if (streamEvent.EventType == "error")
+                    throw new InvalidOperationException($"Gemini Interactions stream failed: {streamEvent.Error}");
+
+                if (streamEvent.EventType is "step.start" or "step.stop" &&
+                    streamEvent.Step is JsonElement step)
+                {
+                    var stepType = GetString(step, "type");
+                    var projected = new List<ContentBlock>();
+                    GeminiInteractionsConverter.ProjectStep(step, projected);
+                    var shouldEmit =
+                        (streamEvent.EventType == "step.start" && stepType == "google_search_call") ||
+                        (streamEvent.EventType == "step.stop" && stepType == "google_search_result");
+                    if (shouldEmit)
+                    {
+                        yield return new StreamChunk
+                        {
+                            Model = request.Model,
+                            ChoiceIndex = streamEvent.Index ?? 0,
+                            Delta = new StreamDelta { ContentBlocks = projected }
+                        };
+                    }
+                }
+
+                if (streamEvent.EventType == "step.delta" && streamEvent.Delta is JsonElement delta)
+                {
+                    var type = delta.TryGetProperty("type", out var typeValue)
+                        ? typeValue.GetString()
+                        : null;
+                    if (type == "text" && delta.TryGetProperty("text", out var textValue))
+                    {
+                        yield return new StreamChunk
+                        {
+                            Model = request.Model,
+                            ChoiceIndex = 0,
+                            Delta = new StreamDelta { Content = textValue.GetString() }
+                        };
+                    }
+                    else if (type == "function_call" || type == "function_call_arguments")
+                    {
+                        yield return new StreamChunk
+                        {
+                            Model = request.Model,
+                            ChoiceIndex = 0,
+                            Delta = new StreamDelta
+                            {
+                                ToolCalls = new List<ToolCallDelta>
+                                {
+                                    new()
+                                    {
+                                        Index = streamEvent.Index ?? 0,
+                                        Id = GetString(delta, "id"),
+                                        Name = GetString(delta, "name"),
+                                        Arguments = delta.TryGetProperty("arguments", out var arguments)
+                                            ? arguments.ValueKind == JsonValueKind.String
+                                                ? arguments.GetString()
+                                                : arguments.GetRawText()
+                                            : null,
+                                        Type = "function"
+                                    }
+                                }
+                            }
+                        };
+                    }
+                }
+
+                if (streamEvent.EventType == "interaction.completed" && streamEvent.Interaction != null)
+                {
+                    var completed = _interactionsConverter.ConvertResponse(streamEvent.Interaction);
+                    if (nativeRequest.Store && completed.Continuation != null)
+                    {
+                        completed.Continuation.Mode = ContinuationMode.ServerManaged;
+                        completed.Continuation.NativeItems.Clear();
+                    }
+                    var choice = completed.Choices.FirstOrDefault();
+                    yield return new StreamChunk
+                    {
+                        Id = completed.Id,
+                        Model = completed.Model,
+                        ChoiceIndex = 0,
+                        Delta = new StreamDelta(),
+                        FinishReason = choice?.FinishReason ?? FinishReason.Stop,
+                        Usage = completed.Usage,
+                        CompletedMessage = choice?.Message,
+                        Continuation = completed.Continuation,
+                        ProviderMetadata = completed.ProviderMetadata
+                    };
+                }
+            }
+        }
+
+        private static StringContent SerializeContent(object value) => new(
+            JsonSerializer.Serialize(value, JsonOptions()),
+            Encoding.UTF8,
+            "application/json");
+
+        private static JsonSerializerOptions JsonOptions() => new()
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+        };
+
+        private static string? GetString(JsonElement element, string property) =>
+            element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+
+        private static bool RequiresGenerateContent(UnifiedRequest request)
+        {
+            return request.Tools?.OfType<ProviderTool>().Any(tool =>
+                tool.Capability == ProviderToolCapability.WebSearch &&
+                tool.Options is WebSearchOptions
+                {
+                    Gemini: { StartTime: not null } or { EndTime: not null }
+                }) == true;
         }
     }
 }

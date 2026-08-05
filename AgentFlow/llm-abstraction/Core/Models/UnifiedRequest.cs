@@ -38,33 +38,33 @@ namespace LLMAbstraction.Core.Models
         public GenerationParameters Parameters { get; set; } = new();
 
         /// <summary>
-        /// Available tools/functions
+        /// Available application functions and provider-native tools.
         /// </summary>
-        public List<ToolDefinition>? Tools { get; set; }
+        public ToolCollection? Tools { get; set; }
 
     /// <summary>
-    /// Tool choice strategy
-    /// </summary>
-    public ToolChoice? ToolChoice { get; set; }
+        /// Tool choice strategy
+        /// </summary>
+        public ToolChoice? ToolChoice { get; set; }
 
     /// <summary>
-    /// Structured output schema (JSON Schema)
-    /// </summary>
-    public ResponseFormat? ResponseFormat { get; set; }
+        /// Structured output schema (JSON Schema)
+        /// </summary>
+        public ResponseFormat? ResponseFormat { get; set; }
 
     /// <summary>
-    /// Reasoning/thinking controls for models that support them.
-    /// </summary>
-    public ReasoningOptions? Reasoning { get; set; }
+        /// Reasoning/thinking controls for models that support them.
+        /// </summary>
+        public ReasoningOptions? Reasoning { get; set; }
 
     /// <summary>
-    /// Request metadata shared by providers when supported.
-    /// </summary>
-    public RequestMetadata? Metadata { get; set; }
+        /// Request metadata shared by providers when supported.
+        /// </summary>
+        public RequestMetadata? Metadata { get; set; }
 
     /// <summary>
-    /// Provider-specific options (escape hatch)
-    /// </summary>
+        /// Provider-specific options (escape hatch)
+        /// </summary>
         public ProviderOptions? ProviderOptions { get; set; }
 
         /// <summary>
@@ -119,17 +119,6 @@ namespace LLMAbstraction.Core.Models
         /// callers normally leave it false when using GenerateAsync.
         /// </summary>
         public bool Stream { get; set; } = false;
-    }
-
-    /// <summary>
-    /// Tool/function definition
-    /// </summary>
-    public class ToolDefinition
-    {
-        public string Name { get; set; } = string.Empty;
-        public string Description { get; set; } = string.Empty;
-        public Dictionary<string, object> Parameters { get; set; } = new();  // JSON Schema
-        public bool? Strict { get; set; }
     }
 
     /// <summary>

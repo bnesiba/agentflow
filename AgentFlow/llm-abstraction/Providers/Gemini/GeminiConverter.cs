@@ -60,15 +60,10 @@ namespace LLMAbstraction.Providers.Gemini
             }
 
             // Convert tools if present
-            if (request.Tools != null && request.Tools.Any())
+            var convertedTools = request.Tools?.Select(ConvertTool).ToList();
+            if (convertedTools?.Count > 0)
             {
-                geminiRequest.Tools = new List<GeminiTool>
-                {
-                    new GeminiTool
-                    {
-                        FunctionDeclarations = request.Tools.Select(ConvertTool).ToList()
-                    }
-                };
+                geminiRequest.Tools = convertedTools;
 
                 geminiRequest.ToolConfig = ConvertToolChoice(request.ToolChoice);
             }
@@ -104,6 +99,7 @@ namespace LLMAbstraction.Providers.Gemini
                 {
                     var candidate = response.Candidates[i];
                     var message = ConvertContent(candidate.Content);
+                    ProjectGroundingMetadata(candidate.GroundingMetadata, message, $"google_search_{candidate.Index}");
                     choices.Add(new ResponseChoice
                     {
                         Index = candidate.Index,
@@ -288,13 +284,63 @@ namespace LLMAbstraction.Providers.Gemini
                 $"Gemini tool result '{toolResult.ToolCallId}' requires ToolName because no matching prior function call is present in the request history.");
         }
 
-        private GeminiFunctionDeclaration ConvertTool(ToolDefinition tool)
+        private GeminiTool ConvertTool(LLMTool tool)
+        {
+            return tool switch
+            {
+                FunctionTool function => new GeminiTool
+                {
+                    FunctionDeclarations = new List<GeminiFunctionDeclaration>
+                    {
+                        ConvertFunctionTool(function)
+                    }
+                },
+                ProviderTool { Capability: ProviderToolCapability.WebSearch } provider
+                    => ConvertWebSearchTool((WebSearchOptions)provider.Options),
+                ProviderTool provider => throw new NotSupportedException(
+                    $"Gemini provider tool '{provider.Capability}' is not implemented."),
+                _ => throw new NotSupportedException($"Unknown tool type '{tool.GetType().Name}'.")
+            };
+        }
+
+        private GeminiFunctionDeclaration ConvertFunctionTool(FunctionTool tool)
         {
             return new GeminiFunctionDeclaration
             {
                 Name = tool.Name,
                 Description = tool.Description,
                 Parameters = tool.Parameters
+            };
+        }
+
+        private static GeminiTool ConvertWebSearchTool(WebSearchOptions options)
+        {
+            var native = options.Gemini;
+            GeminiTimeRangeFilter? timeRange = null;
+            if (native?.StartTime != null && native.EndTime != null)
+            {
+                timeRange = new GeminiTimeRangeFilter
+                {
+                    StartTime = native.StartTime.Value.ToUniversalTime().ToString("O"),
+                    EndTime = native.EndTime.Value.ToUniversalTime().ToString("O")
+                };
+            }
+
+            return new GeminiTool
+            {
+                GoogleSearch = new GeminiGoogleSearch
+                {
+                    TimeRangeFilter = timeRange,
+                    SearchTypes = new GeminiSearchTypes
+                    {
+                        WebSearch = options.ContentTypes.HasFlag(WebSearchContentTypes.Web)
+                            ? new Dictionary<string, object>()
+                            : null,
+                        ImageSearch = options.ContentTypes.HasFlag(WebSearchContentTypes.Image)
+                            ? new Dictionary<string, object>()
+                            : null
+                    }
+                }
             };
         }
 
@@ -400,6 +446,115 @@ namespace LLMAbstraction.Providers.Gemini
                 NativeRepresentation = nativeRepresentation
             };
         }
+
+        internal static void ProjectGroundingMetadata(
+            JsonElement? groundingMetadata,
+            UnifiedMessage message,
+            string toolCallId)
+        {
+            if (groundingMetadata is not { ValueKind: JsonValueKind.Object } metadata)
+                return;
+
+            var native = ProviderNativeRepresentation.Create(ProviderIds.Gemini, metadata);
+            var queries = metadata.TryGetProperty("webSearchQueries", out var queryValues) &&
+                queryValues.ValueKind == JsonValueKind.Array
+                    ? queryValues.EnumerateArray()
+                        .Where(value => value.ValueKind == JsonValueKind.String)
+                        .Select(value => value.GetString())
+                        .Where(value => value != null)
+                        .ToList()
+                    : new List<string?>();
+
+            message.Content.Add(new ProviderToolCallContent
+            {
+                Id = toolCallId,
+                ToolId = "web_search",
+                Capability = ProviderToolCapability.WebSearch,
+                Status = "completed",
+                Input = new Dictionary<string, object?> { ["queries"] = queries },
+                NativeRepresentation = native
+            });
+
+            var sources = ExtractGroundingSources(metadata);
+            var suggestions = metadata.TryGetProperty("searchEntryPoint", out var entryPoint) &&
+                entryPoint.ValueKind == JsonValueKind.Object &&
+                entryPoint.TryGetProperty("renderedContent", out var renderedContent) &&
+                renderedContent.ValueKind == JsonValueKind.String
+                    ? renderedContent.GetString()
+                    : null;
+            message.Content.Add(new ProviderToolResultContent
+            {
+                ToolCallId = toolCallId,
+                Capability = ProviderToolCapability.WebSearch,
+                Status = "completed",
+                Output = JsonSerializer.Deserialize<object>(metadata.GetRawText()),
+                Sources = sources,
+                SearchSuggestionsHtml = suggestions,
+                NativeRepresentation = native
+            });
+
+            var text = message.Content.OfType<TextContent>().FirstOrDefault();
+            if (text == null || !metadata.TryGetProperty("groundingSupports", out var supports) ||
+                supports.ValueKind != JsonValueKind.Array)
+                return;
+            foreach (var support in supports.EnumerateArray())
+            {
+                if (!support.TryGetProperty("segment", out var segment) ||
+                    !support.TryGetProperty("groundingChunkIndices", out var indices) ||
+                    indices.ValueKind != JsonValueKind.Array)
+                    continue;
+                foreach (var index in indices.EnumerateArray())
+                {
+                    if (!index.TryGetInt32(out var sourceIndex) || sourceIndex < 0 || sourceIndex >= sources.Count)
+                        continue;
+                    text.Citations.Add(new Citation
+                    {
+                        Url = sources[sourceIndex].Url,
+                        Title = sources[sourceIndex].Title,
+                        StartIndex = GetInt(segment, "startIndex"),
+                        EndIndex = GetInt(segment, "endIndex"),
+                        NativeRepresentation = ProviderNativeRepresentation.Create(ProviderIds.Gemini, support)
+                    });
+                }
+            }
+        }
+
+        private static List<WebSource> ExtractGroundingSources(JsonElement metadata)
+        {
+            var result = new List<WebSource>();
+            if (!metadata.TryGetProperty("groundingChunks", out var chunks) || chunks.ValueKind != JsonValueKind.Array)
+                return result;
+            foreach (var chunk in chunks.EnumerateArray())
+            {
+                if (chunk.TryGetProperty("web", out var web))
+                {
+                    result.Add(new WebSource
+                    {
+                        Url = GetString(web, "uri"),
+                        Title = GetString(web, "title"),
+                        SourceType = "web"
+                    });
+                }
+                else if (chunk.TryGetProperty("image", out var image))
+                {
+                    result.Add(new WebSource
+                    {
+                        Url = GetString(image, "sourceUri") ?? GetString(image, "uri"),
+                        Title = GetString(image, "title"),
+                        SourceType = "image"
+                    });
+                }
+            }
+            return result;
+        }
+
+        private static string? GetString(JsonElement element, string property) =>
+            element.ValueKind == JsonValueKind.Object && element.TryGetProperty(property, out var value) &&
+            value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+        private static int? GetInt(JsonElement element, string property) =>
+            element.ValueKind == JsonValueKind.Object && element.TryGetProperty(property, out var value) &&
+            value.TryGetInt32(out var result) ? result : null;
 
         private static bool TryGetGeminiNativeValue(ContentBlock block, out JsonElement value)
         {

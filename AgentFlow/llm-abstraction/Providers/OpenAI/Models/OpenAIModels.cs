@@ -36,6 +36,9 @@ namespace LLMAbstraction.Providers.OpenAI.Models
         [JsonPropertyName("tools")]
         public List<OpenAIResponseTool>? Tools { get; set; }
 
+        [JsonPropertyName("include")]
+        public List<string>? Include { get; set; }
+
         [JsonPropertyName("tool_choice")]
         public object? ToolChoice { get; set; }
 
@@ -64,16 +67,37 @@ namespace LLMAbstraction.Providers.OpenAI.Models
         public string Type { get; set; } = "function";
 
         [JsonPropertyName("name")]
-        public string Name { get; set; } = string.Empty;
+        public string? Name { get; set; }
 
         [JsonPropertyName("description")]
         public string? Description { get; set; }
 
         [JsonPropertyName("parameters")]
-        public Dictionary<string, object> Parameters { get; set; } = new();
+        public Dictionary<string, object>? Parameters { get; set; }
 
         [JsonPropertyName("strict")]
-        public bool Strict { get; set; } = true;
+        public bool? Strict { get; set; }
+
+        [JsonPropertyName("filters")]
+        public Dictionary<string, object>? Filters { get; set; }
+
+        [JsonPropertyName("user_location")]
+        public Dictionary<string, object>? UserLocation { get; set; }
+
+        [JsonPropertyName("search_context_size")]
+        public string? SearchContextSize { get; set; }
+
+        [JsonPropertyName("return_token_budget")]
+        public string? ReturnTokenBudget { get; set; }
+
+        [JsonPropertyName("external_web_access")]
+        public bool? ExternalWebAccess { get; set; }
+
+        [JsonPropertyName("search_content_types")]
+        public List<string>? SearchContentTypes { get; set; }
+
+        [JsonPropertyName("image_settings")]
+        public Dictionary<string, object>? ImageSettings { get; set; }
     }
 
     public class OpenAITextConfig
