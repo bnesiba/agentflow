@@ -20,7 +20,8 @@ namespace LLMAbstraction.Providers.OpenAI
         {
             "model", "input", "previous_response_id", "instructions", "max_output_tokens",
             "temperature", "top_p", "stream", "tools", "tool_choice", "parallel_tool_calls",
-            "text", "reasoning", "user", "metadata", "include"
+            "text", "reasoning", "user", "metadata", "include", "prompt_cache_key",
+            "prompt_cache_options", "prompt_cache_retention"
         };
         private static readonly JsonSerializerOptions NativeJsonOptions = new()
         {
@@ -33,7 +34,10 @@ namespace LLMAbstraction.Providers.OpenAI
 
         public OpenAIResponseRequest ConvertRequest(UnifiedRequest request)
         {
-            LLMRequestValidator.ValidateAndThrow(request, LLMProvider.OpenAI);
+            LLMRequestValidator.ValidateAndThrow(
+                request,
+                LLMProvider.OpenAI,
+                LLMApiSurface.OpenAIResponses);
             var openAIRequest = new OpenAIResponseRequest
             {
                 Model = request.Model,
@@ -45,6 +49,14 @@ namespace LLMAbstraction.Providers.OpenAI
                 Stream = request.Parameters.Stream,
                 User = request.Metadata?.UserId,
                 Metadata = request.Metadata?.Tags,
+                PromptCacheKey = request.Cache?.OpenAI?.CacheKey,
+                PromptCacheOptions = ConvertPromptCacheOptions(request),
+                PromptCacheRetention = request.Cache?.OpenAI?.Retention switch
+                {
+                    OpenAIPromptCacheRetention.InMemory => "in_memory",
+                    OpenAIPromptCacheRetention.TwentyFourHours => "24h",
+                    _ => null
+                },
                 AdditionalProperties = ProviderOptionMerger.ConvertAdditionalFields(
                     request.ProviderOptions?.OpenAI,
                     ProtectedRequestFields,
@@ -88,11 +100,11 @@ namespace LLMAbstraction.Providers.OpenAI
                 }
             }
 
-            if (request.ResponseFormat != null)
+            if (request.Output != null)
             {
                 openAIRequest.Text = new OpenAITextConfig
                 {
-                    Format = ConvertResponseFormat(request.ResponseFormat)
+                    Format = ConvertOutputFormat(request.Output)
                 };
             }
 
@@ -138,6 +150,7 @@ namespace LLMAbstraction.Providers.OpenAI
                 }
             }
 
+            EvidenceProjector.Project(message, ProviderIds.OpenAI);
             var finishReason = ConvertFinishReason(response, message);
 
             return new UnifiedResponse
@@ -159,6 +172,7 @@ namespace LLMAbstraction.Providers.OpenAI
                     OutputTokens = response.Usage.OutputTokens,
                     TotalTokens = response.Usage.TotalTokens,
                     CacheReadTokens = response.Usage.InputTokenDetails?.CachedTokens,
+                    CacheWriteTokens = response.Usage.InputTokenDetails?.CacheWriteTokens,
                     ReasoningTokens = response.Usage.OutputTokenDetails?.ReasoningTokens
                 } : new UsageInfo(),
                 ProviderMetadata = new Dictionary<string, object>
@@ -291,15 +305,17 @@ namespace LLMAbstraction.Providers.OpenAI
                     switch (block)
                     {
                         case TextContent text:
-                            messageContent.Add(new Dictionary<string, object?>
+                            var textItem = new Dictionary<string, object?>
                             {
                                 { "type", "input_text" },
                                 { "text", text.Text }
-                            });
+                            };
+                            AddPromptCacheBreakpoint(textItem, text.Cache);
+                            messageContent.Add(textItem);
                             break;
 
                         case ImageContent image:
-                            AddImageContent(messageContent, image.Source);
+                            AddImageContent(messageContent, image.Source, image.Cache);
                             break;
 
                         case MediaContent media:
@@ -349,30 +365,36 @@ namespace LLMAbstraction.Providers.OpenAI
             return result;
         }
 
-        private static void AddImageContent(List<object> content, ImageSource source)
+        private static void AddImageContent(
+            List<object> content,
+            ImageSource source,
+            PromptCacheDirective? cache)
         {
+            Dictionary<string, object?> item;
             if (!string.IsNullOrEmpty(source.Url))
             {
-                content.Add(new Dictionary<string, object?>
+                item = new Dictionary<string, object?>
                 {
                     { "type", "input_image" },
                     { "detail", "auto" },
                     { "image_url", source.Url }
-                });
+                };
             }
             else if (!string.IsNullOrEmpty(source.Data))
             {
-                content.Add(new Dictionary<string, object?>
+                item = new Dictionary<string, object?>
                 {
                     { "type", "input_image" },
                     { "detail", "auto" },
                     { "image_url", $"data:{source.MediaType ?? "image/jpeg"};base64,{source.Data}" }
-                });
+                };
             }
             else
             {
                 throw new NotSupportedException("OpenAI image content requires a URL or base64 data.");
             }
+            AddPromptCacheBreakpoint(item, cache);
+            content.Add(item);
         }
 
         private static void AddMediaContent(List<object> content, MediaContent media)
@@ -381,30 +403,36 @@ namespace LLMAbstraction.Providers.OpenAI
             {
                 if (!string.IsNullOrEmpty(media.Source.FileId))
                 {
-                    content.Add(new Dictionary<string, object?>
+                    var item = new Dictionary<string, object?>
                     {
                         { "type", "input_image" },
                         { "detail", "auto" },
                         { "file_id", media.Source.FileId }
-                    });
+                    };
+                    AddPromptCacheBreakpoint(item, media.Cache);
+                    content.Add(item);
                 }
                 else if (!string.IsNullOrEmpty(media.Source.Url))
                 {
-                    content.Add(new Dictionary<string, object?>
+                    var item = new Dictionary<string, object?>
                     {
                         { "type", "input_image" },
                         { "detail", "auto" },
                         { "image_url", media.Source.Url }
-                    });
+                    };
+                    AddPromptCacheBreakpoint(item, media.Cache);
+                    content.Add(item);
                 }
                 else if (!string.IsNullOrEmpty(media.Source.Base64Data))
                 {
-                    content.Add(new Dictionary<string, object?>
+                    var item = new Dictionary<string, object?>
                     {
                         { "type", "input_image" },
                         { "detail", "auto" },
                         { "image_url", $"data:{media.MediaType};base64,{media.Source.Base64Data}" }
-                    });
+                    };
+                    AddPromptCacheBreakpoint(item, media.Cache);
+                    content.Add(item);
                 }
                 else
                 {
@@ -417,34 +445,65 @@ namespace LLMAbstraction.Providers.OpenAI
 
             if (!string.IsNullOrEmpty(media.Source.FileId))
             {
-                content.Add(new Dictionary<string, object?>
+                var item = new Dictionary<string, object?>
                 {
                     { "type", "input_file" },
                     { "file_id", media.Source.FileId }
-                });
+                };
+                AddPromptCacheBreakpoint(item, media.Cache);
+                content.Add(item);
             }
             else if (!string.IsNullOrEmpty(media.Source.Url))
             {
-                content.Add(new Dictionary<string, object?>
+                var item = new Dictionary<string, object?>
                 {
                     { "type", "input_file" },
                     { "file_url", media.Source.Url }
-                });
+                };
+                AddPromptCacheBreakpoint(item, media.Cache);
+                content.Add(item);
             }
             else if (!string.IsNullOrEmpty(media.Source.Base64Data))
             {
-                content.Add(new Dictionary<string, object?>
+                var item = new Dictionary<string, object?>
                 {
                     { "type", "input_file" },
                     { "filename", media.Source.FileName ?? "input" },
                     { "file_data", $"data:{media.MediaType};base64,{media.Source.Base64Data}" }
-                });
+                };
+                AddPromptCacheBreakpoint(item, media.Cache);
+                content.Add(item);
             }
             else
             {
                 throw new NotSupportedException(
                     "OpenAI media content requires a file ID, URL, or base64 data. Provider file URIs are not accepted as file URLs.");
             }
+        }
+
+        private static void AddPromptCacheBreakpoint(
+            Dictionary<string, object?> item,
+            PromptCacheDirective? directive)
+        {
+            if (directive != null)
+                item["prompt_cache_breakpoint"] = new Dictionary<string, object> { ["mode"] = "explicit" };
+        }
+
+        private static OpenAIPromptCacheConfig? ConvertPromptCacheOptions(UnifiedRequest request)
+        {
+            var hasBreakpoints = request.Messages.SelectMany(message => message.Content)
+                .Any(block => block.Cache != null);
+            var mode = request.Cache?.Mode switch
+            {
+                PromptCacheMode.ExplicitBreakpointsOnly or PromptCacheMode.Disabled => "explicit",
+                PromptCacheMode.PreferReuse => "implicit",
+                _ when hasBreakpoints => "explicit",
+                _ => null
+            };
+            var ttl = request.Cache?.Ttl == PromptCacheTtl.ThirtyMinutes ? "30m" : null;
+            return mode != null || ttl != null
+                ? new OpenAIPromptCacheConfig { Mode = mode, Ttl = ttl }
+                : null;
         }
 
         private static string ConvertRole(MessageRole role)
@@ -568,25 +627,25 @@ namespace LLMAbstraction.Providers.OpenAI
             };
         }
 
-        private static object? ConvertResponseFormat(ResponseFormat responseFormat)
+        private static object? ConvertOutputFormat(OutputFormat output)
         {
-            return responseFormat.Type switch
+            return output.Kind switch
             {
-                ResponseFormatType.Text => new Dictionary<string, object?>
+                OutputFormatKind.Text => new Dictionary<string, object?>
                 {
                     { "type", "text" }
                 },
-                ResponseFormatType.Json => new Dictionary<string, object?>
+                OutputFormatKind.JsonObject => new Dictionary<string, object?>
                 {
                     { "type", "json_object" }
                 },
-                ResponseFormatType.JsonSchema => new Dictionary<string, object?>
+                OutputFormatKind.JsonSchema => new Dictionary<string, object?>
                 {
                     { "type", "json_schema" },
-                    { "name", responseFormat.JsonSchema!.Name },
-                    { "description", responseFormat.JsonSchema.Description },
-                    { "schema", responseFormat.JsonSchema.Schema },
-                    { "strict", responseFormat.JsonSchema.Strict }
+                    { "name", output.JsonSchema!.Name },
+                    { "description", output.JsonSchema.Description },
+                    { "schema", output.JsonSchema.Schema },
+                    { "strict", true }
                 },
                 _ => null
             };
@@ -594,20 +653,50 @@ namespace LLMAbstraction.Providers.OpenAI
 
         private static OpenAIReasoningConfig? ConvertReasoning(ReasoningOptions reasoning)
         {
-            if (reasoning.Enabled == false && string.IsNullOrEmpty(reasoning.Effort))
-            {
-                return new OpenAIReasoningConfig { Effort = "none" };
-            }
-
-            if (string.IsNullOrEmpty(reasoning.Effort) && string.IsNullOrEmpty(reasoning.Summary))
+            if (reasoning.Effort == null &&
+                reasoning.Output is null or ReasoningOutput.Omitted &&
+                reasoning.OpenAI == null)
                 return null;
 
             return new OpenAIReasoningConfig
             {
-                Effort = reasoning.Effort,
-                Summary = reasoning.Summary ?? (reasoning.IncludeThoughts == true ? "auto" : null)
+                Effort = reasoning.Effort == null ? null : ToWireValue(reasoning.Effort.Value),
+                Summary = reasoning.OpenAI?.Summary switch
+                {
+                    OpenAIReasoningSummary.Auto => "auto",
+                    OpenAIReasoningSummary.Concise => "concise",
+                    OpenAIReasoningSummary.Detailed => "detailed",
+                    null when reasoning.Output == ReasoningOutput.Summary => "auto",
+                    null when reasoning.Output == ReasoningOutput.Omitted => null,
+                    _ => null
+                },
+                Mode = reasoning.OpenAI?.Mode switch
+                {
+                    OpenAIReasoningMode.Standard => "standard",
+                    OpenAIReasoningMode.Pro => "pro",
+                    _ => null
+                },
+                Context = reasoning.OpenAI?.Context switch
+                {
+                    OpenAIReasoningContext.Auto => "auto",
+                    OpenAIReasoningContext.CurrentTurn => "current_turn",
+                    OpenAIReasoningContext.AllTurns => "all_turns",
+                    _ => null
+                }
             };
         }
+
+        private static string ToWireValue(ReasoningEffort effort) => effort switch
+        {
+            ReasoningEffort.None => "none",
+            ReasoningEffort.Minimal => "minimal",
+            ReasoningEffort.Low => "low",
+            ReasoningEffort.Medium => "medium",
+            ReasoningEffort.High => "high",
+            ReasoningEffort.XHigh => "xhigh",
+            ReasoningEffort.Max => "max",
+            _ => throw new ArgumentOutOfRangeException(nameof(effort), effort, null)
+        };
 
         private static void AddMessageContent(UnifiedMessage message, OpenAIOutputItem item)
         {
@@ -630,12 +719,23 @@ namespace LLMAbstraction.Providers.OpenAI
                     {
                         foreach (var annotation in annotations.EnumerateArray())
                         {
+                            var annotationType = GetString(annotation, "type");
+                            var annotationIndex = GetInt(annotation, "index");
                             text.Citations.Add(new Citation
                             {
                                 Url = GetString(annotation, "url"),
                                 Title = GetString(annotation, "title"),
+                                FileId = GetString(annotation, "file_id"),
+                                FileName = GetString(annotation, "filename"),
                                 StartIndex = GetInt(annotation, "start_index"),
                                 EndIndex = GetInt(annotation, "end_index"),
+                                ProviderMetadata = annotationType != null || annotationIndex != null
+                                    ? new Dictionary<string, object>
+                                    {
+                                        ["openai.annotationType"] = annotationType ?? string.Empty,
+                                        ["openai.annotationIndex"] = annotationIndex ?? -1
+                                    }
+                                    : null,
                                 NativeRepresentation = ProviderNativeRepresentation.Create(ProviderIds.OpenAI, annotation)
                             });
                         }

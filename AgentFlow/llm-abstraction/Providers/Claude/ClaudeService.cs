@@ -5,12 +5,14 @@ using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using LLMAbstraction.Core.Interfaces;
 using LLMAbstraction.Core.Models;
 using LLMAbstraction.Core.Errors;
 using LLMAbstraction.Core;
+using LLMAbstraction.Core.Transport;
 using LLMAbstraction.Providers.Claude.Models;
 
 namespace LLMAbstraction.Providers.Claude
@@ -18,15 +20,20 @@ namespace LLMAbstraction.Providers.Claude
     /// <summary>
     /// Service for interacting with Claude API
     /// </summary>
-    public class ClaudeService : ILLMService
+    public class ClaudeService : ILLMServiceWithTokenCounting
     {
         private readonly HttpClient _httpClient;
         private readonly ClaudeConverter _converter;
         private readonly string _apiKey;
         private readonly string _apiVersion;
         private readonly string _baseUrl;
+        private readonly ProviderHttpTransport _transport;
 
-        public ClaudeService(string apiKey, string? apiVersion = null, string? baseUrl = null)
+        public ClaudeService(
+            string apiKey,
+            string? apiVersion = null,
+            string? baseUrl = null,
+            LLMTransportOptions? transportOptions = null)
         {
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
             _apiVersion = apiVersion ?? "2023-06-01";
@@ -38,13 +45,15 @@ namespace LLMAbstraction.Providers.Claude
                 BaseAddress = new Uri(_baseUrl)
             };
             ConfigureHeaders();
+            _transport = new ProviderHttpTransport(_httpClient, LLMProvider.Claude, transportOptions);
         }
 
         public ClaudeService(
             HttpClient httpClient, 
             string apiKey, 
             string? apiVersion = null,
-            ClaudeConverter? converter = null)
+            ClaudeConverter? converter = null,
+            LLMTransportOptions? transportOptions = null)
         {
             _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
@@ -53,6 +62,7 @@ namespace LLMAbstraction.Providers.Claude
             _converter = converter ?? new ClaudeConverter();
 
             ConfigureHeaders();
+            _transport = new ProviderHttpTransport(_httpClient, LLMProvider.Claude, transportOptions);
         }
 
         private void ConfigureHeaders()
@@ -77,24 +87,24 @@ namespace LLMAbstraction.Providers.Claude
                 DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
             };
             var jsonContent = JsonSerializer.Serialize(claudeRequest, jsonOptions);
-            var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
-
-            // Make API call
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
-            {
-                Content = content
-            };
-            AddRequestSpecificHeaders(httpRequest, request);
-            using var response = await _httpClient.SendAsync(
-                httpRequest,
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken);
+            using var transportResponse = await _transport.SendAsync(
+                () => CreateRequest("/v1/messages", jsonContent, request),
+                "/v1/messages",
+                request.Model,
+                false,
+                cancellationToken,
+                request.Transport);
+            var response = transportResponse.Response;
 
             // Handle errors
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-                throw ProviderErrorParser.Create(LLMProvider.Claude, response, errorContent);
+                throw ProviderErrorParser.Create(
+                    LLMProvider.Claude,
+                    response,
+                    errorContent,
+                    transportResponse.Metadata);
             }
 
             // Parse response
@@ -109,7 +119,53 @@ namespace LLMAbstraction.Providers.Claude
             }
 
             // Convert to unified format
-            return _converter.ConvertResponse(claudeResponse);
+            var converted = _converter.ConvertResponse(claudeResponse);
+            converted.Transport = transportResponse.Metadata;
+            return converted;
+        }
+
+        public async Task<TokenCountResult> CountInputTokensAsync(
+            UnifiedRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            var claudeRequest = _converter.ConvertRequest(request);
+            var jsonOptions = new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+            };
+            var jsonContent = CreateTokenCountJson(claudeRequest, jsonOptions);
+            using var transportResponse = await _transport.SendAsync(
+                () => CreateRequest("/v1/messages/count_tokens", jsonContent, request),
+                "/v1/messages/count_tokens",
+                request.Model,
+                false,
+                cancellationToken,
+                request.Transport);
+            var response = transportResponse.Response;
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                throw ProviderErrorParser.Create(
+                    LLMProvider.Claude,
+                    response,
+                    errorContent,
+                    transportResponse.Metadata);
+            }
+
+            var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
+            var count = JsonSerializer.Deserialize<ClaudeMessageTokensCount>(responseJson, jsonOptions)
+                ?? throw new InvalidOperationException("Failed to deserialize Claude token count response");
+
+            return new TokenCountResult
+            {
+                Provider = LLMProvider.Claude,
+                Model = request.Model,
+                InputTokens = count.InputTokens,
+                Accuracy = TokenCountAccuracy.Estimate,
+                Transport = transportResponse.Metadata
+            };
         }
 
         public async IAsyncEnumerable<StreamChunk> StreamAsync(
@@ -127,24 +183,24 @@ namespace LLMAbstraction.Providers.Claude
                 DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
             };
             var jsonContent = JsonSerializer.Serialize(claudeRequest, jsonOptions);
-            var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
-
-            // Make API call
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
-            {
-                Content = content
-            };
-            AddRequestSpecificHeaders(httpRequest, request);
-            using var response = await _httpClient.SendAsync(
-                httpRequest,
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken);
+            using var transportResponse = await _transport.SendAsync(
+                () => CreateRequest("/v1/messages", jsonContent, request),
+                "/v1/messages",
+                request.Model,
+                true,
+                cancellationToken,
+                request.Transport);
+            var response = transportResponse.Response;
 
             // Handle errors
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-                throw ProviderErrorParser.Create(LLMProvider.Claude, response, errorContent);
+                throw ProviderErrorParser.Create(
+                    LLMProvider.Claude,
+                    response,
+                    errorContent,
+                    transportResponse.Metadata);
             }
 
             // Stream response
@@ -161,6 +217,7 @@ namespace LLMAbstraction.Providers.Claude
                 Role = MessageRole.Assistant,
                 Content = new List<ContentBlock>()
             };
+            var transportAttached = false;
 
             while (!reader.EndOfStream)
             {
@@ -194,7 +251,7 @@ namespace LLMAbstraction.Providers.Claude
 
                                 if (blockStart.ContentBlock.Type == "tool_use")
                                 {
-                                    yield return new StreamChunk
+                                    yield return AttachTransport(new StreamChunk
                                     {
                                         Id = messageId ?? string.Empty,
                                         Model = model ?? string.Empty,
@@ -212,7 +269,7 @@ namespace LLMAbstraction.Providers.Claude
                                                 }
                                             }
                                         }
-                                    };
+                                    }, transportResponse.Metadata, ref transportAttached);
                                 }
                             }
                             break;
@@ -224,7 +281,7 @@ namespace LLMAbstraction.Providers.Claude
                                 if (contentBlocks.TryGetValue(delta.Index, out var textState))
                                     textState.Text.Append(delta.Delta.Text);
 
-                                yield return new StreamChunk
+                                yield return AttachTransport(new StreamChunk
                                 {
                                     Id = messageId ?? string.Empty,
                                     Model = model ?? string.Empty,
@@ -233,7 +290,7 @@ namespace LLMAbstraction.Providers.Claude
                                     {
                                         Content = delta.Delta.Text
                                     }
-                                };
+                                }, transportResponse.Metadata, ref transportAttached);
                             }
                             else if (delta?.Delta?.PartialJson != null)
                             {
@@ -241,7 +298,7 @@ namespace LLMAbstraction.Providers.Claude
                                 block?.PartialJson.Append(delta.Delta.PartialJson);
                                 if (block?.Block.Type == "tool_use")
                                 {
-                                    yield return new StreamChunk
+                                    yield return AttachTransport(new StreamChunk
                                     {
                                         Id = messageId ?? string.Empty,
                                         Model = model ?? string.Empty,
@@ -260,7 +317,7 @@ namespace LLMAbstraction.Providers.Claude
                                                 }
                                             }
                                         }
-                                    };
+                                    }, transportResponse.Metadata, ref transportAttached);
                                 }
                             }
                             else if (delta?.Delta?.Thinking != null || delta?.Delta?.Signature != null)
@@ -273,7 +330,7 @@ namespace LLMAbstraction.Providers.Claude
                                         thinkingState.Signature.Append(delta.Delta.Signature);
                                 }
 
-                                yield return new StreamChunk
+                                yield return AttachTransport(new StreamChunk
                                 {
                                     Id = messageId ?? string.Empty,
                                     Model = model ?? string.Empty,
@@ -285,7 +342,7 @@ namespace LLMAbstraction.Providers.Claude
                                         { "claude.thinking", delta.Delta.Thinking ?? string.Empty },
                                         { "claude.signature", delta.Delta.Signature ?? string.Empty }
                                     }
-                                };
+                                }, transportResponse.Metadata, ref transportAttached);
                             }
                             break;
 
@@ -319,13 +376,13 @@ namespace LLMAbstraction.Providers.Claude
                                     };
                                 }
 
-                                yield return new StreamChunk
+                                yield return AttachTransport(new StreamChunk
                                 {
                                     Id = messageId ?? string.Empty,
                                     Model = model ?? string.Empty,
                                     ChoiceIndex = 0,
                                     Delta = completedDelta
-                                };
+                                }, transportResponse.Metadata, ref transportAttached);
                             }
                             break;
 
@@ -345,7 +402,9 @@ namespace LLMAbstraction.Providers.Claude
                                     _ => FinishReason.Other
                                 };
 
-                                yield return new StreamChunk
+                                EvidenceProjector.Project(completedMessage, ProviderIds.Claude);
+
+                                yield return AttachTransport(new StreamChunk
                                 {
                                     Id = messageId ?? string.Empty,
                                     Model = model ?? string.Empty,
@@ -354,7 +413,7 @@ namespace LLMAbstraction.Providers.Claude
                                     FinishReason = finishReason,
                                     Usage = ConvertStreamingUsage(initialUsage, messageDelta.Usage),
                                     CompletedMessage = completedMessage
-                                };
+                                }, transportResponse.Metadata, ref transportAttached);
                             }
                             break;
                     }
@@ -375,6 +434,11 @@ namespace LLMAbstraction.Providers.Claude
                 OutputTokens = outputTokens,
                 TotalTokens = inputTokens + outputTokens,
                 CacheCreationTokens = initial?.CacheCreationInputTokens ?? final?.CacheCreationInputTokens,
+                CacheWriteTokens = initial?.CacheCreationInputTokens ?? final?.CacheCreationInputTokens,
+                CacheWrite5MinuteTokens = initial?.CacheCreation?.Ephemeral5mInputTokens ??
+                    initial?.Ephemeral5mInputTokens ?? final?.CacheCreation?.Ephemeral5mInputTokens ?? final?.Ephemeral5mInputTokens,
+                CacheWrite1HourTokens = initial?.CacheCreation?.Ephemeral1hInputTokens ??
+                    initial?.Ephemeral1hInputTokens ?? final?.CacheCreation?.Ephemeral1hInputTokens ?? final?.Ephemeral1hInputTokens,
                 CacheReadTokens = initial?.CacheReadInputTokens ?? final?.CacheReadInputTokens,
                 ProviderMetadata = (final?.ServerToolUse ?? initial?.ServerToolUse) is { } serverToolUse
                     ? new Dictionary<string, object> { ["claude.serverToolUse"] = serverToolUse }
@@ -417,6 +481,52 @@ namespace LLMAbstraction.Providers.Claude
 
                 return Block;
             }
+        }
+
+        private static StreamChunk AttachTransport(
+            StreamChunk chunk,
+            TransportMetadata metadata,
+            ref bool attached)
+        {
+            if (!attached)
+            {
+                chunk.Transport = metadata;
+                attached = true;
+            }
+            return chunk;
+        }
+
+        private static string CreateTokenCountJson(
+            ClaudeMessageRequest request,
+            JsonSerializerOptions options)
+        {
+            var json = JsonSerializer.SerializeToNode(request, options)?.AsObject()
+                ?? throw new InvalidOperationException("Failed to serialize Claude token count request");
+
+            // Anthropic's count endpoint accepts the input-bearing Messages
+            // fields, including system, tools, output_config, and thinking.
+            // Generation-only and bookkeeping fields are intentionally omitted.
+            json.Remove("max_tokens");
+            json.Remove("temperature");
+            json.Remove("top_p");
+            json.Remove("top_k");
+            json.Remove("stop_sequences");
+            json.Remove("stream");
+            json.Remove("metadata");
+            return json.ToJsonString(options);
+        }
+
+        private static HttpRequestMessage CreateRequest(
+            string endpoint,
+            string json,
+            UnifiedRequest request)
+        {
+            var message = new HttpRequestMessage(HttpMethod.Post, endpoint)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            };
+            AddRequestSpecificHeaders(message, request);
+            return message;
         }
 
         private static void AddRequestSpecificHeaders(HttpRequestMessage httpRequest, UnifiedRequest request)

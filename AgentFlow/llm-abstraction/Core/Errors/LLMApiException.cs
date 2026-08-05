@@ -2,6 +2,7 @@ using System;
 using System.Net;
 using System.Net.Http;
 using System.Text.Json;
+using LLMAbstraction.Core.Transport;
 
 namespace LLMAbstraction.Core.Errors
 {
@@ -17,7 +18,8 @@ namespace LLMAbstraction.Core.Errors
             string? requestId,
             TimeSpan? retryAfter,
             string rawResponse,
-            JsonElement? details = null)
+            JsonElement? details = null,
+            TransportMetadata? transport = null)
             : base(message, null, statusCode)
         {
             Provider = provider;
@@ -28,6 +30,7 @@ namespace LLMAbstraction.Core.Errors
             RetryAfter = retryAfter;
             RawResponse = rawResponse;
             Details = details?.Clone();
+            Transport = transport;
             IsTransient = statusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.Conflict or
                 HttpStatusCode.TooManyRequests || (int)statusCode >= 500;
         }
@@ -41,5 +44,6 @@ namespace LLMAbstraction.Core.Errors
         public bool IsTransient { get; }
         public string RawResponse { get; }
         public JsonElement? Details { get; }
+        public TransportMetadata? Transport { get; }
     }
 }

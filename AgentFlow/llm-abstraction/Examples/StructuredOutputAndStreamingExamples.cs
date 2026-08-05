@@ -31,9 +31,9 @@ namespace LLMAbstraction.Examples
                     MaxOutputTokens = 200,
                     Temperature = 0.7
                 },
-                ResponseFormat = new ResponseFormat
+                Output = new OutputFormat
                 {
-                    Type = ResponseFormatType.Json
+                    Kind = OutputFormatKind.JsonObject
                 }
             };
 
@@ -71,7 +71,6 @@ namespace LLMAbstraction.Examples
                     ["email"] = new Dictionary<string, object>
                     {
                         ["type"] = "string",
-                        ["format"] = "email",
                         ["description"] = "The person's email address"
                     },
                     ["interests"] = new Dictionary<string, object>
@@ -84,7 +83,7 @@ namespace LLMAbstraction.Examples
                         ["description"] = "List of the person's interests"
                     }
                 },
-                ["required"] = new[] { "name", "age", "email" },
+                ["required"] = new[] { "name", "age", "email", "interests" },
                 ["additionalProperties"] = false
             };
 
@@ -101,15 +100,14 @@ namespace LLMAbstraction.Examples
                     MaxOutputTokens = 300,
                     Temperature = 0.7
                 },
-                ResponseFormat = new ResponseFormat
+                Output = new OutputFormat
                 {
-                    Type = ResponseFormatType.JsonSchema,
-                    JsonSchema = new JsonSchema
+                    Kind = OutputFormatKind.JsonSchema,
+                    JsonSchema = new JsonSchemaDefinition
                     {
                         Name = "person",
                         Description = "A person profile",
-                        Schema = personSchema,
-                        Strict = true  // Enforce strict schema validation
+                        Schema = personSchema
                     }
                 }
             };
@@ -172,7 +170,7 @@ namespace LLMAbstraction.Examples
 
             var request = new UnifiedRequest
             {
-                Model = "claude-sonnet-4-20250514",
+                Model = "claude-sonnet-4-6",
                 Messages = new List<UnifiedMessage>
                 {
                     new UnifiedMessage(MessageRole.User, "Explain quantum computing in simple terms.")
@@ -218,9 +216,37 @@ namespace LLMAbstraction.Examples
                     MaxOutputTokens = 500,
                     Temperature = 0.5
                 },
-                ResponseFormat = new ResponseFormat
+                Output = new OutputFormat
                 {
-                    Type = ResponseFormatType.Json
+                    Kind = OutputFormatKind.JsonSchema,
+                    JsonSchema = new JsonSchemaDefinition
+                    {
+                        Name = "language_list",
+                        Schema = new Dictionary<string, object>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object>
+                            {
+                                ["languages"] = new Dictionary<string, object>
+                                {
+                                    ["type"] = "array",
+                                    ["items"] = new Dictionary<string, object>
+                                    {
+                                        ["type"] = "object",
+                                        ["properties"] = new Dictionary<string, object>
+                                        {
+                                            ["name"] = new Dictionary<string, object> { ["type"] = "string" },
+                                            ["use"] = new Dictionary<string, object> { ["type"] = "string" }
+                                        },
+                                        ["required"] = new[] { "name", "use" },
+                                        ["additionalProperties"] = false
+                                    }
+                                }
+                            },
+                            ["required"] = new[] { "languages" },
+                            ["additionalProperties"] = false
+                        }
+                    }
                 }
                 // Claude uses native output_config.format parameter
             };
@@ -257,7 +283,8 @@ namespace LLMAbstraction.Examples
                     },
                     ["prepTime"] = new Dictionary<string, object> { ["type"] = "number" }
                 },
-                ["required"] = new[] { "name", "ingredients", "steps" }
+                ["required"] = new[] { "name", "ingredients", "steps", "prepTime" },
+                ["additionalProperties"] = false
             };
 
             var request = new UnifiedRequest
@@ -272,10 +299,10 @@ namespace LLMAbstraction.Examples
                     MaxOutputTokens = 1000,
                     Temperature = 0.7
                 },
-                ResponseFormat = new ResponseFormat
+                Output = new OutputFormat
                 {
-                    Type = ResponseFormatType.JsonSchema,
-                    JsonSchema = new JsonSchema
+                    Kind = OutputFormatKind.JsonSchema,
+                    JsonSchema = new JsonSchemaDefinition
                     {
                         Name = "recipe",
                         Schema = recipeSchema

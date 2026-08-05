@@ -22,6 +22,7 @@ namespace LLMAbstraction.Core.Models
     {
         public MessageRole Role { get; set; }
         public List<ContentBlock> Content { get; set; } = new();
+        public EvidenceCollection Evidence { get; set; } = new();
         public Dictionary<string, object>? ProviderMetadata { get; set; }
 
         // Convenience constructor for simple text messages
@@ -57,6 +58,9 @@ namespace LLMAbstraction.Core.Models
         /// precedence over a reconstructed portable representation.
         /// </summary>
         public ProviderNativeRepresentation? NativeRepresentation { get; set; }
+
+        /// <summary>Optional stable-prefix cache breakpoint after this block.</summary>
+        public PromptCacheDirective? Cache { get; set; }
     }
 
     /// <summary>
@@ -107,6 +111,31 @@ namespace LLMAbstraction.Core.Models
         public override string Type => "media";
         public string MediaType { get; set; } = string.Empty;
         public MediaSource Source { get; set; } = new();
+    }
+
+    /// <summary>
+    /// A portable file/document input. Citation controls are translated only
+    /// on provider surfaces that expose the same document-citation semantics.
+    /// </summary>
+    public sealed class DocumentContent : MediaContent
+    {
+        public override string Type => "document";
+        public string? Title { get; set; }
+        public string? Context { get; set; }
+        public bool? CitationsEnabled { get; set; }
+    }
+
+    /// <summary>
+    /// A retrieved search result supplied as model input, distinct from a
+    /// provider-native tool result. Currently represented natively by Anthropic.
+    /// </summary>
+    public sealed class SearchResultContent : ContentBlock
+    {
+        public override string Type => "search_result";
+        public string Source { get; set; } = string.Empty;
+        public string Title { get; set; } = string.Empty;
+        public List<TextContent> Content { get; set; } = new();
+        public bool? CitationsEnabled { get; set; }
     }
 
     /// <summary>
@@ -185,6 +214,7 @@ namespace LLMAbstraction.Core.Models
 
     public sealed class WebSource
     {
+        public string? SourceId { get; set; }
         public string? Url { get; set; }
         public string? Title { get; set; }
         public string? Snippet { get; set; }
@@ -197,13 +227,23 @@ namespace LLMAbstraction.Core.Models
 
     public sealed class Citation
     {
+        /// <summary>Canonical span in the returned answer text, if supplied.</summary>
+        public AnswerTextSpan? AnswerSpan { get; set; }
+
+        /// <summary>Canonical links to one or more evidence sources.</summary>
+        public List<CitationSourceReference> Sources { get; set; } = new();
+
+        // Convenience projection retained for ordinary web/file citations.
         public string? Url { get; set; }
         public string? Title { get; set; }
+        public string? FileId { get; set; }
         public string? FileName { get; set; }
         public int? PageNumber { get; set; }
         public int? StartIndex { get; set; }
         public int? EndIndex { get; set; }
         public string? CitedText { get; set; }
+        public SourceLocation? SourceLocation { get; set; }
+        public Dictionary<string, object>? ProviderMetadata { get; set; }
         public ProviderNativeRepresentation? NativeRepresentation { get; set; }
     }
 }

@@ -28,7 +28,10 @@ namespace LLMAbstraction.Providers.Gemini
 
         public GeminiInteractionRequest ConvertRequest(UnifiedRequest request)
         {
-            LLMRequestValidator.ValidateAndThrow(request, LLMProvider.Gemini);
+            LLMRequestValidator.ValidateAndThrow(
+                request,
+                LLMProvider.Gemini,
+                LLMApiSurface.GeminiInteractions);
 
             var result = new GeminiInteractionRequest
             {
@@ -36,7 +39,7 @@ namespace LLMAbstraction.Providers.Gemini
                 SystemInstruction = UnifiedRequestNormalization.CombineInstructions(request),
                 Store = ReadStoreOption(request),
                 GenerationConfig = ConvertGenerationConfig(request),
-                ResponseFormat = ConvertResponseFormat(request.ResponseFormat)
+                ResponseFormat = ConvertOutputFormat(request.Output)
             };
 
             if (request.Continuation?.Provider == ProviderIds.Gemini)
@@ -74,6 +77,7 @@ namespace LLMAbstraction.Providers.Gemini
                 ProjectStep(step, content);
 
             var message = new UnifiedMessage(MessageRole.Assistant, content);
+            EvidenceProjector.Project(message, ProviderIds.Gemini);
             var finishReason = message.IsAssistantWithToolCalls()
                 ? FinishReason.ToolCalls
                 : ConvertStatus(response.Status);
@@ -370,15 +374,22 @@ namespace LLMAbstraction.Providers.Gemini
             Add(config, "top_p", request.Parameters.TopP);
             Add(config, "top_k", request.Parameters.TopK);
             Add(config, "stop_sequences", request.Parameters.StopSequences);
-            Add(config, "thinking_level", request.Reasoning?.Effort?.ToLowerInvariant());
-            Add(config, "thinking_summaries", request.Reasoning?.IncludeThoughts == true ? "auto" : null);
+            Add(config, "thinking_level", request.Reasoning?.Effort == null
+                ? null
+                : ToThinkingLevel(request.Reasoning.Effort.Value));
+            Add(config, "thinking_summaries", request.Reasoning?.Output switch
+            {
+                ReasoningOutput.Summary => "auto",
+                ReasoningOutput.Omitted => "none",
+                _ => null
+            });
             Add(config, "tool_choice", ConvertToolChoice(request.ToolChoice, request.Tools));
             return config.Count > 0 ? config : null;
         }
 
-        private static List<JsonElement>? ConvertResponseFormat(ResponseFormat? format)
+        private static List<JsonElement>? ConvertOutputFormat(OutputFormat? format)
         {
-            if (format == null || format.Type == ResponseFormatType.Text)
+            if (format == null || format.Kind == OutputFormatKind.Text)
                 return null;
 
             var definition = new Dictionary<string, object?>
@@ -386,10 +397,22 @@ namespace LLMAbstraction.Providers.Gemini
                 ["type"] = "text",
                 ["mime_type"] = "application/json"
             };
-            if (format.Type == ResponseFormatType.JsonSchema && format.JsonSchema != null)
+            if (format.Kind == OutputFormatKind.JsonSchema && format.JsonSchema != null)
                 definition["schema"] = format.JsonSchema.Schema;
             return new List<JsonElement> { ToElement(definition) };
         }
+
+        private static string ToThinkingLevel(ReasoningEffort effort) => effort switch
+        {
+            ReasoningEffort.None => "none",
+            ReasoningEffort.Minimal => "minimal",
+            ReasoningEffort.Low => "low",
+            ReasoningEffort.Medium => "medium",
+            ReasoningEffort.High => "high",
+            ReasoningEffort.XHigh => "xhigh",
+            ReasoningEffort.Max => "max",
+            _ => throw new ArgumentOutOfRangeException(nameof(effort), effort, null)
+        };
 
         private static object? ConvertToolChoice(ToolChoice? choice, ToolCollection? tools)
         {

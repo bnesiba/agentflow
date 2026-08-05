@@ -51,7 +51,14 @@ public sealed class RequestValidationTests
                 }
             },
             ToolChoice = new ToolChoice { Type = ToolChoiceType.Required },
-            Reasoning = new ReasoningOptions { BudgetTokens = 1024 }
+            Reasoning = new ReasoningOptions
+            {
+                Anthropic = new AnthropicReasoningOptions
+                {
+                    Mode = AnthropicThinkingMode.Manual,
+                    BudgetTokens = 1024
+                }
+            }
         };
 
         var exception = Assert.Throws<LLMRequestValidationException>(
@@ -108,17 +115,24 @@ public sealed class RequestValidationTests
     [Fact]
     public void CapabilityProfilesExposePortableFeatureBounds()
     {
-        var claude = LLMRequestValidator.GetCapabilities(LLMProvider.Claude);
-        var openAI = LLMRequestValidator.GetCapabilities(LLMProvider.OpenAI);
+        var claude = LLMRequestValidator.GetCapabilities(
+            LLMProvider.Claude,
+            "claude-sonnet-4-6",
+            LLMApiSurface.AnthropicMessages);
+        var openAI = LLMRequestValidator.GetCapabilities(
+            LLMProvider.OpenAI,
+            "gpt-5.6",
+            LLMApiSurface.OpenAIResponses);
 
         Assert.Equal(1, claude.MaximumTemperature);
         Assert.Equal(2, openAI.MaximumTemperature);
-        Assert.True(claude.SupportsReasoning);
-        Assert.True(openAI.SupportsStructuredOutput);
+        Assert.Equal(ModelRecognition.Known, claude.Recognition);
+        Assert.Equal(CapabilitySupport.Supported, claude.Reasoning);
+        Assert.Equal(CapabilitySupport.Supported, openAI.StructuredOutput);
     }
 
     [Fact]
-    public void LossyProviderMappingsAreReportedAsWarnings()
+    public void LossyProviderMappingsAreRejected()
     {
         var openAIRequest = new UnifiedRequest
         {
@@ -130,9 +144,13 @@ public sealed class RequestValidationTests
                 StopSequences = new List<string> { "END" }
             }
         };
-        var openAIWarnings = LLMRequestValidator.Validate(openAIRequest, LLMProvider.OpenAI);
-        Assert.Contains(openAIWarnings, diagnostic => diagnostic.Code == "openai.top_k.unsupported");
-        Assert.Contains(openAIWarnings, diagnostic => diagnostic.Code == "openai.stop_sequences.unsupported");
+        var openAIErrors = LLMRequestValidator.Validate(openAIRequest, LLMProvider.OpenAI);
+        Assert.Contains(openAIErrors, diagnostic =>
+            diagnostic.Code == "openai.top_k.unsupported" &&
+            diagnostic.Severity == RequestDiagnosticSeverity.Error);
+        Assert.Contains(openAIErrors, diagnostic =>
+            diagnostic.Code == "openai.stop_sequences.unsupported" &&
+            diagnostic.Severity == RequestDiagnosticSeverity.Error);
 
         var geminiRequest = new UnifiedRequest
         {
@@ -148,9 +166,9 @@ public sealed class RequestValidationTests
                 }
             }
         };
-        var geminiWarning = Assert.Single(
+        var geminiError = Assert.Single(
             LLMRequestValidator.Validate(geminiRequest, LLMProvider.Gemini),
             diagnostic => diagnostic.Code == "gemini.tool_strict.unmapped");
-        Assert.Equal(RequestDiagnosticSeverity.Warning, geminiWarning.Severity);
+        Assert.Equal(RequestDiagnosticSeverity.Error, geminiError.Severity);
     }
 }

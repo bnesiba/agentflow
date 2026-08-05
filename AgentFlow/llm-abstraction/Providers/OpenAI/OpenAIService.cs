@@ -6,12 +6,14 @@ using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using LLMAbstraction.Core.Interfaces;
 using LLMAbstraction.Core.Models;
 using LLMAbstraction.Core.Errors;
 using LLMAbstraction.Core;
+using LLMAbstraction.Core.Transport;
 using LLMAbstraction.Providers.OpenAI.Models;
 
 namespace LLMAbstraction.Providers.OpenAI
@@ -19,14 +21,18 @@ namespace LLMAbstraction.Providers.OpenAI
     /// <summary>
     /// Service for interacting with the OpenAI Responses API.
     /// </summary>
-    public class OpenAIService : ILLMService
+    public class OpenAIService : ILLMServiceWithTokenCounting
     {
         private readonly HttpClient _httpClient;
         private readonly OpenAIConverter _converter;
         private readonly string _apiKey;
         private readonly string _baseUrl;
+        private readonly ProviderHttpTransport _transport;
 
-        public OpenAIService(string apiKey, string? baseUrl = null)
+        public OpenAIService(
+            string apiKey,
+            string? baseUrl = null,
+            LLMTransportOptions? transportOptions = null)
         {
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
             _baseUrl = baseUrl ?? "https://api.openai.com/v1";
@@ -38,9 +44,14 @@ namespace LLMAbstraction.Providers.OpenAI
             };
             _httpClient.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", _apiKey);
+            _transport = new ProviderHttpTransport(_httpClient, LLMProvider.OpenAI, transportOptions);
         }
 
-        public OpenAIService(HttpClient httpClient, string apiKey, OpenAIConverter? converter = null)
+        public OpenAIService(
+            HttpClient httpClient,
+            string apiKey,
+            OpenAIConverter? converter = null,
+            LLMTransportOptions? transportOptions = null)
         {
             _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
@@ -53,6 +64,7 @@ namespace LLMAbstraction.Providers.OpenAI
                 _httpClient.DefaultRequestHeaders.Authorization =
                     new AuthenticationHeaderValue("Bearer", _apiKey);
             }
+            _transport = new ProviderHttpTransport(_httpClient, LLMProvider.OpenAI, transportOptions);
         }
 
         public async Task<UnifiedResponse> GenerateAsync(
@@ -64,17 +76,26 @@ namespace LLMAbstraction.Providers.OpenAI
 
             var jsonOptions = CreateJsonOptions();
             var jsonContent = JsonSerializer.Serialize(openAIRequest, jsonOptions);
-            var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
-
-            using var response = await _httpClient.PostAsync(
+            using var transportResponse = await _transport.SendAsync(
+                () => new HttpRequestMessage(HttpMethod.Post, "responses")
+                {
+                    Content = new StringContent(jsonContent, Encoding.UTF8, "application/json")
+                },
                 "responses",
-                content,
-                cancellationToken);
+                request.Model,
+                false,
+                cancellationToken,
+                request.Transport);
+            var response = transportResponse.Response;
 
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-                throw ProviderErrorParser.Create(LLMProvider.OpenAI, response, errorContent);
+                throw ProviderErrorParser.Create(
+                    LLMProvider.OpenAI,
+                    response,
+                    errorContent,
+                    transportResponse.Metadata);
             }
 
             var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -87,7 +108,57 @@ namespace LLMAbstraction.Providers.OpenAI
                 throw new InvalidOperationException("Failed to deserialize OpenAI response");
             }
 
-            return _converter.ConvertResponse(openAIResponse);
+            var converted = _converter.ConvertResponse(openAIResponse);
+            converted.Transport = transportResponse.Metadata;
+            return converted;
+        }
+
+        public async Task<TokenCountResult> CountInputTokensAsync(
+            UnifiedRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            var openAIRequest = _converter.ConvertRequest(request);
+            var jsonOptions = CreateJsonOptions();
+            var jsonContent = CreateTokenCountJson(openAIRequest, jsonOptions);
+            using var transportResponse = await _transport.SendAsync(
+                () => new HttpRequestMessage(HttpMethod.Post, "responses/input_tokens")
+                {
+                    Content = new StringContent(jsonContent, Encoding.UTF8, "application/json")
+                },
+                "responses/input_tokens",
+                request.Model,
+                false,
+                cancellationToken,
+                request.Transport);
+            var response = transportResponse.Response;
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                throw ProviderErrorParser.Create(
+                    LLMProvider.OpenAI,
+                    response,
+                    errorContent,
+                    transportResponse.Metadata);
+            }
+
+            var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
+            var count = JsonSerializer.Deserialize<OpenAIInputTokenCountResponse>(responseJson, jsonOptions)
+                ?? throw new InvalidOperationException("Failed to deserialize OpenAI token count response");
+
+            var metadata = new Dictionary<string, object>();
+            if (!string.IsNullOrEmpty(count.Object))
+                metadata["openai.object"] = count.Object;
+
+            return new TokenCountResult
+            {
+                Provider = LLMProvider.OpenAI,
+                Model = request.Model,
+                InputTokens = count.InputTokens,
+                Accuracy = TokenCountAccuracy.Exact,
+                ProviderMetadata = metadata,
+                Transport = transportResponse.Metadata
+            };
         }
 
         public async IAsyncEnumerable<StreamChunk> StreamAsync(
@@ -99,26 +170,32 @@ namespace LLMAbstraction.Providers.OpenAI
 
             var jsonOptions = CreateJsonOptions();
             var jsonContent = JsonSerializer.Serialize(openAIRequest, jsonOptions);
-            var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
-
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "responses")
-            {
-                Content = content
-            };
-            using var response = await _httpClient.SendAsync(
-                httpRequest,
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken);
+            using var transportResponse = await _transport.SendAsync(
+                () => new HttpRequestMessage(HttpMethod.Post, "responses")
+                {
+                    Content = new StringContent(jsonContent, Encoding.UTF8, "application/json")
+                },
+                "responses",
+                request.Model,
+                true,
+                cancellationToken,
+                request.Transport);
+            var response = transportResponse.Response;
 
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-                throw ProviderErrorParser.Create(LLMProvider.OpenAI, response, errorContent);
+                throw ProviderErrorParser.Create(
+                    LLMProvider.OpenAI,
+                    response,
+                    errorContent,
+                    transportResponse.Metadata);
             }
 
             using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var reader = new StreamReader(stream);
             var streamState = new OpenAIStreamState();
+            var transportAttached = false;
 
             while (!reader.EndOfStream)
             {
@@ -148,6 +225,11 @@ namespace LLMAbstraction.Providers.OpenAI
                 var converted = ConvertStreamEvent(streamEvent, streamState);
                 if (converted != null)
                 {
+                    if (!transportAttached)
+                    {
+                        converted.Transport = transportResponse.Metadata;
+                        transportAttached = true;
+                    }
                     yield return converted;
                 }
             }
@@ -160,6 +242,27 @@ namespace LLMAbstraction.Providers.OpenAI
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
                 DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
             };
+        }
+
+        private static string CreateTokenCountJson(
+            OpenAIResponseRequest request,
+            JsonSerializerOptions options)
+        {
+            var json = JsonSerializer.SerializeToNode(request, options)?.AsObject()
+                ?? throw new InvalidOperationException("Failed to serialize OpenAI token count request");
+
+            // These fields control generation or request bookkeeping and are not
+            // accepted by the Responses input-token endpoint. Input, tools,
+            // output schema, reasoning, and continuation are retained because
+            // OpenAI documents them as part of the counted request.
+            json.Remove("max_output_tokens");
+            json.Remove("temperature");
+            json.Remove("top_p");
+            json.Remove("stream");
+            json.Remove("include");
+            json.Remove("user");
+            json.Remove("metadata");
+            return json.ToJsonString(options);
         }
 
         private static Uri CreateBaseAddress(string baseUrl)
@@ -374,6 +477,7 @@ namespace LLMAbstraction.Providers.OpenAI
                 OutputTokens = usage.OutputTokens,
                 TotalTokens = usage.TotalTokens,
                 CacheReadTokens = usage.InputTokenDetails?.CachedTokens,
+                CacheWriteTokens = usage.InputTokenDetails?.CacheWriteTokens,
                 ReasoningTokens = usage.OutputTokenDetails?.ReasoningTokens
             };
         }

@@ -18,7 +18,8 @@ namespace LLMAbstraction.Providers.Gemini
     {
         private static readonly HashSet<string> ProtectedRequestFields = new(StringComparer.Ordinal)
         {
-            "contents", "systemInstruction", "generationConfig", "tools", "toolConfig", "safetySettings"
+            "contents", "systemInstruction", "generationConfig", "tools", "toolConfig", "safetySettings",
+            "cachedContent"
         };
         private static readonly HashSet<string> SeparatelyHandledOptionFields = new(StringComparer.Ordinal)
         {
@@ -31,7 +32,10 @@ namespace LLMAbstraction.Providers.Gemini
 
         public GeminiGenerateRequest ConvertRequest(UnifiedRequest request)
         {
-            LLMRequestValidator.ValidateAndThrow(request, LLMProvider.Gemini);
+            LLMRequestValidator.ValidateAndThrow(
+                request,
+                LLMProvider.Gemini,
+                LLMApiSurface.GeminiGenerateContent);
             var geminiRequest = new GeminiGenerateRequest
             {
                 Contents = ConvertMessages(request.Messages),
@@ -43,7 +47,8 @@ namespace LLMAbstraction.Providers.Gemini
                     TopK = request.Parameters.TopK,
                     StopSequences = request.Parameters.StopSequences,
                     ThinkingConfig = ConvertReasoning(request.Reasoning)
-                }
+                },
+                CachedContent = request.Cache?.Gemini?.CachedContentName
             };
 
             // Add normalized instruction text, including system-role messages.
@@ -68,10 +73,10 @@ namespace LLMAbstraction.Providers.Gemini
                 geminiRequest.ToolConfig = ConvertToolChoice(request.ToolChoice);
             }
 
-            // Convert response format if present
-            if (request.ResponseFormat != null)
+            // Convert output format if present
+            if (request.Output != null)
             {
-                ConvertResponseFormat(geminiRequest, request.ResponseFormat);
+                ConvertOutputFormat(geminiRequest, request.Output);
             }
 
             if (request.ProviderOptions?.Gemini != null &&
@@ -89,6 +94,48 @@ namespace LLMAbstraction.Providers.Gemini
             return geminiRequest;
         }
 
+        internal GeminiCachedContent ConvertCachedContent(PromptCacheCreateRequest request)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+            ArgumentNullException.ThrowIfNull(request.Prefix);
+            if (string.IsNullOrWhiteSpace(request.Prefix.Model))
+                throw new ArgumentException("A provider model identifier is required.", nameof(request));
+
+            var converted = new GeminiCachedContent
+            {
+                Model = request.Prefix.Model.StartsWith("models/", StringComparison.Ordinal)
+                    ? request.Prefix.Model
+                    : $"models/{request.Prefix.Model}",
+                DisplayName = request.DisplayName,
+                Contents = ConvertMessages(request.Prefix.Messages),
+                Ttl = request.Ttl == null ? null : FormatDuration(request.Ttl.Value),
+                ExpireTime = request.ExpireTime
+            };
+            var instructions = UnifiedRequestNormalization.CombineInstructions(request.Prefix);
+            if (!string.IsNullOrEmpty(instructions))
+            {
+                converted.SystemInstruction = new GeminiContent
+                {
+                    Parts = new List<GeminiPart> { new() { Text = instructions } }
+                };
+            }
+            var tools = request.Prefix.Tools?.Select(ConvertTool).ToList();
+            if (tools?.Count > 0)
+            {
+                converted.Tools = tools;
+                converted.ToolConfig = ConvertToolChoice(request.Prefix.ToolChoice);
+            }
+            return converted;
+        }
+
+        private static string FormatDuration(TimeSpan duration)
+        {
+            var seconds = duration.TotalSeconds;
+            return seconds == Math.Truncate(seconds)
+                ? $"{seconds:0}s"
+                : $"{seconds:0.#########}s";
+        }
+
         public UnifiedResponse ConvertResponse(GeminiGenerateResponse response)
         {
             var choices = new List<ResponseChoice>();
@@ -100,6 +147,7 @@ namespace LLMAbstraction.Providers.Gemini
                     var candidate = response.Candidates[i];
                     var message = ConvertContent(candidate.Content);
                     ProjectGroundingMetadata(candidate.GroundingMetadata, message, $"google_search_{candidate.Index}");
+                    EvidenceProjector.Project(message, ProviderIds.Gemini);
                     choices.Add(new ResponseChoice
                     {
                         Index = candidate.Index,
@@ -126,7 +174,8 @@ namespace LLMAbstraction.Providers.Gemini
                     InputTokens = response.UsageMetadata?.PromptTokenCount ?? 0,
                     OutputTokens = response.UsageMetadata?.CandidatesTokenCount ?? 0,
                     TotalTokens = response.UsageMetadata?.TotalTokenCount ?? 0,
-                    ReasoningTokens = response.UsageMetadata?.ThoughtsTokenCount
+                    ReasoningTokens = response.UsageMetadata?.ThoughtsTokenCount,
+                    CacheReadTokens = response.UsageMetadata?.CachedContentTokenCount
                 },
                 ProviderMetadata = response.PromptFeedback != null
                     ? new Dictionary<string, object> { { "promptFeedback", response.PromptFeedback } }
@@ -493,6 +542,9 @@ namespace LLMAbstraction.Providers.Gemini
                 NativeRepresentation = native
             });
 
+            // Assign stable source IDs before linking supports/citations.
+            EvidenceProjector.Project(message, ProviderIds.Gemini);
+
             var text = message.Content.OfType<TextContent>().FirstOrDefault();
             if (text == null || !metadata.TryGetProperty("groundingSupports", out var supports) ||
                 supports.ValueKind != JsonValueKind.Array)
@@ -503,20 +555,64 @@ namespace LLMAbstraction.Providers.Gemini
                     !support.TryGetProperty("groundingChunkIndices", out var indices) ||
                     indices.ValueKind != JsonValueKind.Array)
                     continue;
+                var textBlockIndex = message.Content.IndexOf(text);
+                var grounding = new GroundingSupport
+                {
+                    AnswerSpan = CreateAnswerSpan(segment, textBlockIndex),
+                    SourceConfidences = ReadDoubles(support, "confidenceScores"),
+                    NativeRepresentation = ProviderNativeRepresentation.Create(ProviderIds.Gemini, support)
+                };
                 foreach (var index in indices.EnumerateArray())
                 {
                     if (!index.TryGetInt32(out var sourceIndex) || sourceIndex < 0 || sourceIndex >= sources.Count)
                         continue;
+                    var sourceId = sources[sourceIndex].SourceId;
+                    if (sourceId == null)
+                        continue;
+                    grounding.Sources.Add(new CitationSourceReference { SourceId = sourceId });
                     text.Citations.Add(new Citation
                     {
                         Url = sources[sourceIndex].Url,
                         Title = sources[sourceIndex].Title,
                         StartIndex = GetInt(segment, "startIndex"),
                         EndIndex = GetInt(segment, "endIndex"),
+                        AnswerSpan = CreateAnswerSpan(segment, textBlockIndex),
+                        Sources = new List<CitationSourceReference>
+                        {
+                            new() { SourceId = sourceId }
+                        },
                         NativeRepresentation = ProviderNativeRepresentation.Create(ProviderIds.Gemini, support)
                     });
                 }
+                if (grounding.Sources.Count > 0)
+                    message.Evidence.GroundingSupports.Add(grounding);
             }
+        }
+
+        private static AnswerTextSpan? CreateAnswerSpan(JsonElement segment, int blockIndex)
+        {
+            var start = GetInt(segment, "startIndex");
+            var end = GetInt(segment, "endIndex");
+            return start != null && end != null
+                ? new AnswerTextSpan
+                {
+                    ContentBlockIndex = blockIndex,
+                    StartIndex = start.Value,
+                    EndIndex = end.Value,
+                    Unit = TextIndexUnit.ProviderDefined
+                }
+                : null;
+        }
+
+        private static IReadOnlyList<double>? ReadDoubles(JsonElement element, string property)
+        {
+            if (!element.TryGetProperty(property, out var values) || values.ValueKind != JsonValueKind.Array)
+                return null;
+            var result = new List<double>();
+            foreach (var value in values.EnumerateArray())
+                if (value.TryGetDouble(out var number))
+                    result.Add(number);
+            return result.Count == 0 ? null : result;
         }
 
         private static List<WebSource> ExtractGroundingSources(JsonElement metadata)
@@ -587,23 +683,23 @@ namespace LLMAbstraction.Providers.Gemini
             return part.AdditionalProperties?.Keys.FirstOrDefault() ?? "unknown";
         }
 
-        private void ConvertResponseFormat(GeminiGenerateRequest request, ResponseFormat responseFormat)
+        private static void ConvertOutputFormat(GeminiGenerateRequest request, OutputFormat output)
         {
             // Gemini uses responseMimeType and responseSchema in GenerationConfig
             if (request.GenerationConfig == null)
                 request.GenerationConfig = new GeminiGenerationConfig();
 
-            switch (responseFormat.Type)
+            switch (output.Kind)
             {
-                case ResponseFormatType.Json:
+                case OutputFormatKind.JsonObject:
                     request.GenerationConfig.ResponseMimeType = "application/json";
                     break;
 
-                case ResponseFormatType.JsonSchema:
+                case OutputFormatKind.JsonSchema:
                     request.GenerationConfig.ResponseMimeType = "application/json";
-                    if (responseFormat.JsonSchema != null)
+                    if (output.JsonSchema != null)
                     {
-                        request.GenerationConfig.ResponseJsonSchema = responseFormat.JsonSchema.Schema;
+                        request.GenerationConfig.ResponseJsonSchema = output.JsonSchema.Schema;
                     }
                     break;
             }
@@ -613,20 +709,39 @@ namespace LLMAbstraction.Providers.Gemini
         {
             if (reasoning == null)
                 return null;
+            if (reasoning.Effort == null &&
+                reasoning.Output == null &&
+                reasoning.Gemini?.ThinkingBudget == null)
+                return null;
 
             var config = new GeminiThinkingConfig
             {
-                IncludeThoughts = reasoning.IncludeThoughts,
-                ThinkingBudget = reasoning.Enabled == false ? 0 : reasoning.BudgetTokens
+                IncludeThoughts = reasoning.Output switch
+                {
+                    ReasoningOutput.Summary => true,
+                    ReasoningOutput.Omitted => false,
+                    _ => null
+                },
+                ThinkingBudget = reasoning.Gemini?.ThinkingBudget
             };
 
-            if (!string.IsNullOrEmpty(reasoning.Effort))
-            {
-                config.ThinkingLevel = reasoning.Effort.ToUpperInvariant();
-            }
+            if (reasoning.Effort != null)
+                config.ThinkingLevel = ToThinkingLevel(reasoning.Effort.Value).ToUpperInvariant();
 
             return config;
         }
+
+        private static string ToThinkingLevel(ReasoningEffort effort) => effort switch
+        {
+            ReasoningEffort.None => "none",
+            ReasoningEffort.Minimal => "minimal",
+            ReasoningEffort.Low => "low",
+            ReasoningEffort.Medium => "medium",
+            ReasoningEffort.High => "high",
+            ReasoningEffort.XHigh => "xhigh",
+            ReasoningEffort.Max => "max",
+            _ => throw new ArgumentOutOfRangeException(nameof(effort), effort, null)
+        };
 
         private static void AddMediaPart(List<GeminiPart> parts, MediaContent media)
         {

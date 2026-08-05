@@ -21,15 +21,22 @@ public sealed class ProviderRequestContractTests
             Parameters = new GenerationParameters
             {
                 MaxOutputTokens = 4096,
-                Temperature = 0.5,
                 TopP = 0.95,
-                TopK = 20,
                 StopSequences = new List<string> { "END" }
             },
-            Reasoning = new ReasoningOptions { BudgetTokens = 1024 },
+            Reasoning = new ReasoningOptions
+            {
+                Effort = ReasoningEffort.Medium,
+                Output = ReasoningOutput.Summary,
+                Anthropic = new AnthropicReasoningOptions
+                {
+                    Mode = AnthropicThinkingMode.Manual,
+                    BudgetTokens = 1024
+                }
+            },
             Tools = new List<ToolDefinition> { WeatherTool(strict: true) },
             ToolChoice = new ToolChoice { Type = ToolChoiceType.Auto },
-            ResponseFormat = WeatherResponseFormat()
+            Output = WeatherOutputFormat()
         };
 
         var json = Serialize(new ClaudeConverter().ConvertRequest(request));
@@ -42,6 +49,8 @@ public sealed class ProviderRequestContractTests
         Assert.Null(json["top_k"]); // incompatible with manual thinking
         Assert.Equal("enabled", Text(json["thinking"]!, "type"));
         Assert.Equal(1024, Number(json["thinking"]!, "budget_tokens"));
+        Assert.Equal("summarized", Text(json["thinking"]!, "display"));
+        Assert.Equal("medium", Text(json["output_config"]!, "effort"));
         Assert.Equal("get_weather", Text(json["tools"]![0]!, "name"));
         Assert.Equal("object", Text(json["tools"]![0]!["input_schema"]!, "type"));
         Assert.Equal("auto", Text(json["tool_choice"]!, "type"));
@@ -52,7 +61,7 @@ public sealed class ProviderRequestContractTests
     public void ClaudePlainTextResponseFormatDoesNotEmitInvalidEmptyFormat()
     {
         var request = BasicRequest("claude-sonnet-4-6");
-        request.ResponseFormat = new ResponseFormat { Type = ResponseFormatType.Text };
+        request.Output = new OutputFormat { Kind = OutputFormatKind.Text };
 
         var json = Serialize(new ClaudeConverter().ConvertRequest(request));
 
@@ -80,8 +89,18 @@ public sealed class ProviderRequestContractTests
             ToolName = "get_weather",
             DisableParallelToolUse = true
         };
-        request.ResponseFormat = WeatherResponseFormat();
-        request.Reasoning = new ReasoningOptions { Effort = "medium", Summary = "auto" };
+        request.Output = WeatherOutputFormat();
+        request.Reasoning = new ReasoningOptions
+        {
+            Effort = ReasoningEffort.Medium,
+            Output = ReasoningOutput.Summary,
+            OpenAI = new OpenAIReasoningOptions
+            {
+                Mode = OpenAIReasoningMode.Pro,
+                Context = OpenAIReasoningContext.AllTurns,
+                Summary = OpenAIReasoningSummary.Auto
+            }
+        };
 
         var json = Serialize(new OpenAIConverter().ConvertRequest(request));
 
@@ -95,6 +114,9 @@ public sealed class ProviderRequestContractTests
         Assert.Equal("function", Text(json["tool_choice"]!, "type"));
         Assert.Equal("json_schema", Text(json["text"]!["format"]!, "type"));
         Assert.Equal("medium", Text(json["reasoning"]!, "effort"));
+        Assert.Equal("pro", Text(json["reasoning"]!, "mode"));
+        Assert.Equal("all_turns", Text(json["reasoning"]!, "context"));
+        Assert.Equal("auto", Text(json["reasoning"]!, "summary"));
     }
 
     [Fact]
@@ -117,8 +139,12 @@ public sealed class ProviderRequestContractTests
             Type = ToolChoiceType.Specific,
             ToolName = "get_weather"
         };
-        request.ResponseFormat = WeatherResponseFormat();
-        request.Reasoning = new ReasoningOptions { Effort = "medium", IncludeThoughts = true };
+        request.Output = WeatherOutputFormat();
+        request.Reasoning = new ReasoningOptions
+        {
+            Effort = ReasoningEffort.Medium,
+            Output = ReasoningOutput.Summary
+        };
 
         var json = Serialize(new GeminiConverter().ConvertRequest(request));
 
@@ -186,10 +212,10 @@ public sealed class ProviderRequestContractTests
         }
     };
 
-    private static ResponseFormat WeatherResponseFormat() => new()
+    private static OutputFormat WeatherOutputFormat() => new()
     {
-        Type = ResponseFormatType.JsonSchema,
-        JsonSchema = new JsonSchema
+        Kind = OutputFormatKind.JsonSchema,
+        JsonSchema = new JsonSchemaDefinition
         {
             Name = "weather",
             Schema = new Dictionary<string, object>

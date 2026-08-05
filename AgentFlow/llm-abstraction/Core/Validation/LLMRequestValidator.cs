@@ -35,80 +35,22 @@ namespace LLMAbstraction.Core.Validation
         public IReadOnlyList<RequestDiagnostic> Diagnostics { get; }
     }
 
-    public sealed class ProviderCapabilityProfile
-    {
-        public required LLMProvider Provider { get; init; }
-        public bool SupportsStreaming { get; init; }
-        public bool SupportsCustomTools { get; init; }
-        public bool SupportsWebSearch { get; init; }
-        public bool SupportsParallelToolCalls { get; init; }
-        public bool SupportsImages { get; init; }
-        public bool SupportsDocuments { get; init; }
-        public bool SupportsStructuredOutput { get; init; }
-        public bool SupportsReasoning { get; init; }
-        public double MinimumTemperature { get; init; }
-        public double MaximumTemperature { get; init; }
-    }
-
     public static class LLMRequestValidator
     {
-        public static ProviderCapabilityProfile GetCapabilities(LLMProvider provider)
-        {
-            return provider switch
-            {
-                LLMProvider.OpenAI => new ProviderCapabilityProfile
-                {
-                    Provider = provider,
-                    SupportsStreaming = true,
-                    SupportsCustomTools = true,
-                    SupportsWebSearch = true,
-                    SupportsParallelToolCalls = true,
-                    SupportsImages = true,
-                    SupportsDocuments = true,
-                    SupportsStructuredOutput = true,
-                    SupportsReasoning = true,
-                    MinimumTemperature = 0,
-                    MaximumTemperature = 2
-                },
-                LLMProvider.Claude => new ProviderCapabilityProfile
-                {
-                    Provider = provider,
-                    SupportsStreaming = true,
-                    SupportsCustomTools = true,
-                    SupportsWebSearch = true,
-                    SupportsParallelToolCalls = true,
-                    SupportsImages = true,
-                    SupportsDocuments = true,
-                    SupportsStructuredOutput = true,
-                    SupportsReasoning = true,
-                    MinimumTemperature = 0,
-                    MaximumTemperature = 1
-                },
-                LLMProvider.Gemini => new ProviderCapabilityProfile
-                {
-                    Provider = provider,
-                    SupportsStreaming = true,
-                    SupportsCustomTools = true,
-                    SupportsWebSearch = true,
-                    SupportsParallelToolCalls = true,
-                    SupportsImages = true,
-                    SupportsDocuments = true,
-                    SupportsStructuredOutput = true,
-                    SupportsReasoning = true,
-                    MinimumTemperature = 0,
-                    MaximumTemperature = 2
-                },
-                _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, null)
-            };
-        }
+        public static ModelCapabilityProfile GetCapabilities(
+            LLMProvider provider,
+            string model,
+            LLMApiSurface? surface = null) =>
+            ModelCapabilityRegistry.Resolve(provider, model, surface);
 
         public static IReadOnlyList<RequestDiagnostic> Validate(
             UnifiedRequest request,
-            LLMProvider provider)
+            LLMProvider provider,
+            LLMApiSurface? surface = null)
         {
             ArgumentNullException.ThrowIfNull(request);
             var diagnostics = new List<RequestDiagnostic>();
-            var capabilities = GetCapabilities(provider);
+            var capabilities = GetCapabilities(provider, request.Model, surface);
 
             AddErrorIf(diagnostics, string.IsNullOrWhiteSpace(request.Model),
                 "request.model.required", "A provider model identifier is required.", "Model");
@@ -142,8 +84,10 @@ namespace LLMAbstraction.Core.Validation
 
             ValidateTools(request, diagnostics);
             ValidateProviderTools(request, provider, diagnostics);
-            ValidateResponseFormat(request, diagnostics);
-            ValidateProviderRules(request, provider, diagnostics);
+            ValidateOutputFormat(request, capabilities, diagnostics);
+            ValidateReasoning(request, capabilities, diagnostics);
+            ValidatePromptCaching(request, provider, capabilities, diagnostics);
+            ValidateProviderRules(request, provider, capabilities, diagnostics);
 
             if (request.Continuation != null && request.Continuation.Provider != ProviderName(provider))
             {
@@ -159,9 +103,180 @@ namespace LLMAbstraction.Core.Validation
             return diagnostics;
         }
 
-        public static void ValidateAndThrow(UnifiedRequest request, LLMProvider provider)
+        private static void ValidatePromptCaching(
+            UnifiedRequest request,
+            LLMProvider provider,
+            ModelCapabilityProfile capabilities,
+            List<RequestDiagnostic> diagnostics)
         {
-            var errors = Validate(request, provider)
+            var cache = request.Cache;
+            var directives = EnumerateCacheDirectives(request).ToList();
+            if (cache == null && directives.Count == 0)
+                return;
+
+            AddWarningIf(diagnostics, capabilities.Recognition == ModelRecognition.Unknown,
+                "request.cache.unknown_model",
+                $"Prompt-caching support has not been verified for model '{request.Model}' on {capabilities.Surface}; cache fields will still be sent.",
+                "Cache");
+
+            AddErrorIf(diagnostics, cache?.OpenAI != null && provider != LLMProvider.OpenAI,
+                "request.cache.provider_options_mismatch",
+                "OpenAI prompt-cache options can only be used with OpenAI.", "Cache.OpenAI");
+            AddErrorIf(diagnostics, cache?.Gemini != null && provider != LLMProvider.Gemini,
+                "request.cache.provider_options_mismatch",
+                "Gemini prompt-cache options can only be used with Gemini.", "Cache.Gemini");
+            AddErrorIf(diagnostics, cache?.Mode == PromptCacheMode.Disabled && directives.Count > 0,
+                "request.cache.disabled_with_breakpoints",
+                "Prompt-cache breakpoints cannot be supplied when caching is Disabled.", "Cache.Mode");
+
+            switch (provider)
+            {
+                case LLMProvider.Claude:
+                    ValidateAnthropicPromptCaching(request, directives, diagnostics);
+                    break;
+                case LLMProvider.OpenAI:
+                    ValidateOpenAIPromptCaching(request, directives, diagnostics);
+                    break;
+                case LLMProvider.Gemini:
+                    ValidateGeminiPromptCaching(request, capabilities.Surface, directives, diagnostics);
+                    break;
+            }
+        }
+
+        private static void ValidateAnthropicPromptCaching(
+            UnifiedRequest request,
+            List<(PromptCacheDirective Directive, string Path, ContentBlock? Block)> directives,
+            List<RequestDiagnostic> diagnostics)
+        {
+            AddErrorIf(diagnostics, request.Cache?.OpenAI != null || request.Cache?.Gemini != null,
+                "claude.cache.provider_options_unsupported",
+                "Anthropic requests cannot use OpenAI or Gemini prompt-cache extensions.", "Cache");
+            AddErrorIf(diagnostics,
+                request.Cache?.Ttl is not null and not (PromptCacheTtl.FiveMinutes or PromptCacheTtl.OneHour),
+                "claude.cache.ttl_unsupported",
+                "Anthropic automatic prompt caching accepts only FiveMinutes or OneHour TTL.", "Cache.Ttl");
+            var automaticBreakpointCount = request.Cache?.Mode == PromptCacheMode.PreferReuse ? 1 : 0;
+            AddErrorIf(diagnostics, directives.Count + automaticBreakpointCount > 4,
+                "claude.cache.breakpoint_limit",
+                "Anthropic Messages accepts at most four cache breakpoints; automatic caching consumes one.", "Messages");
+
+            var sawFiveMinute = false;
+            foreach (var (directive, path, block) in directives)
+            {
+                AddErrorIf(diagnostics,
+                    directive.Ttl is not null and not (PromptCacheTtl.FiveMinutes or PromptCacheTtl.OneHour),
+                    "claude.cache.breakpoint_ttl_unsupported",
+                    "Anthropic cache breakpoints accept only FiveMinutes or OneHour TTL.", path);
+                AddErrorIf(diagnostics, block is ProviderNativeContent,
+                    "claude.cache.native_block_unrepresentable",
+                    "A cache breakpoint cannot be added to an opaque provider-native content block.", path);
+
+                if (directive.Ttl is null or PromptCacheTtl.FiveMinutes)
+                    sawFiveMinute = true;
+                AddErrorIf(diagnostics, sawFiveMinute && directive.Ttl == PromptCacheTtl.OneHour,
+                    "claude.cache.ttl_order",
+                    "Anthropic requires one-hour cache prefixes to precede five-minute prefixes in tools, instructions, then message order.", path);
+            }
+        }
+
+        private static void ValidateOpenAIPromptCaching(
+            UnifiedRequest request,
+            List<(PromptCacheDirective Directive, string Path, ContentBlock? Block)> directives,
+            List<RequestDiagnostic> diagnostics)
+        {
+            AddErrorIf(diagnostics, request.Cache?.Gemini != null,
+                "openai.cache.provider_options_unsupported",
+                "OpenAI requests cannot use Gemini prompt-cache extensions.", "Cache.Gemini");
+            AddErrorIf(diagnostics, request.Cache?.Ttl is not null and not PromptCacheTtl.ThirtyMinutes,
+                "openai.cache.ttl_unsupported",
+                "OpenAI prompt_cache_options accepts only the ThirtyMinutes TTL.", "Cache.Ttl");
+            AddErrorIf(diagnostics, request.InstructionsCache != null,
+                "openai.cache.instructions_breakpoint_unrepresentable",
+                "OpenAI Responses explicit breakpoints can be placed on input text, image, or file items, not the top-level instructions field.",
+                "InstructionsCache");
+            AddErrorIf(diagnostics, request.Tools?.Any(tool => tool.Cache != null) == true,
+                "openai.cache.tool_breakpoint_unrepresentable",
+                "OpenAI Responses explicit breakpoints cannot be placed on tool declarations.", "Tools.Cache");
+            AddErrorIf(diagnostics,
+                request.Cache?.OpenAI?.Retention != null && request.Cache?.Ttl != null,
+                "openai.cache.retention_ttl_conflict",
+                "OpenAI legacy prompt_cache_retention cannot be combined with prompt_cache_options TTL.", "Cache");
+
+            var hasExplicitBreakpoints = directives.Any(item => item.Block != null);
+            AddWarningIf(diagnostics,
+                hasExplicitBreakpoints && !request.Model.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase),
+                "openai.cache.explicit_breakpoint_model_unverified",
+                $"Explicit prompt-cache breakpoints are not verified for model '{request.Model}'; the fields will still be sent.",
+                "Messages");
+            AddWarningIf(diagnostics,
+                request.Cache?.OpenAI?.Retention != null && request.Model.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase),
+                "openai.cache.retention_model_unverified",
+                $"Legacy prompt_cache_retention is not documented for model '{request.Model}'; the field will still be sent.",
+                "Cache.OpenAI.Retention");
+
+            foreach (var (directive, path, block) in directives)
+            {
+                AddErrorIf(diagnostics, directive.Ttl != null,
+                    "openai.cache.breakpoint_ttl_unrepresentable",
+                    "OpenAI TTL is request-wide; individual explicit breakpoints cannot specify a TTL.", path);
+                AddErrorIf(diagnostics,
+                    block != null && block is not TextContent && block is not ImageContent && block is not MediaContent,
+                    "openai.cache.breakpoint_unrepresentable",
+                    "OpenAI Responses explicit breakpoints can be placed only on input text, image, or file content.", path);
+            }
+        }
+
+        private static void ValidateGeminiPromptCaching(
+            UnifiedRequest request,
+            LLMApiSurface surface,
+            List<(PromptCacheDirective Directive, string Path, ContentBlock? Block)> directives,
+            List<RequestDiagnostic> diagnostics)
+        {
+            AddErrorIf(diagnostics, request.Cache?.OpenAI != null,
+                "gemini.cache.provider_options_unsupported",
+                "Gemini requests cannot use OpenAI prompt-cache extensions.", "Cache.OpenAI");
+            AddErrorIf(diagnostics, directives.Count > 0,
+                "gemini.cache.breakpoints_unrepresentable",
+                "Gemini does not expose per-block cache breakpoints; use implicit caching or a cachedContent resource.", "Messages");
+            AddErrorIf(diagnostics, request.Cache?.Ttl != null,
+                "gemini.cache.request_ttl_unrepresentable",
+                "Gemini cache TTL is configured when a cachedContent resource is created, not on generation requests.", "Cache.Ttl");
+            AddErrorIf(diagnostics, request.Cache?.Mode is PromptCacheMode.ExplicitBreakpointsOnly or PromptCacheMode.Disabled,
+                "gemini.cache.mode_unrepresentable",
+                "Gemini generation requests cannot select explicit-breakpoint-only or disabled implicit caching.", "Cache.Mode");
+            AddErrorIf(diagnostics,
+                surface == LLMApiSurface.GeminiInteractions &&
+                !string.IsNullOrWhiteSpace(request.Cache?.Gemini?.CachedContentName),
+                "gemini.interactions.explicit_cache_unrepresentable",
+                "Gemini Interactions cannot reference cachedContent resources; use generateContent.", "Cache.Gemini.CachedContentName");
+        }
+
+        private static IEnumerable<(PromptCacheDirective Directive, string Path, ContentBlock? Block)>
+            EnumerateCacheDirectives(UnifiedRequest request)
+        {
+            if (request.Tools != null)
+            {
+                for (var index = 0; index < request.Tools.Count; index++)
+                    if (request.Tools[index].Cache is { } cache)
+                        yield return (cache, $"Tools[{index}].Cache", null);
+            }
+            if (request.InstructionsCache != null)
+                yield return (request.InstructionsCache, "InstructionsCache", null);
+            for (var messageIndex = 0; messageIndex < request.Messages.Count; messageIndex++)
+            {
+                var content = request.Messages[messageIndex].Content;
+                for (var contentIndex = 0; contentIndex < content.Count; contentIndex++)
+                    if (content[contentIndex].Cache is { } cache)
+                        yield return (cache, $"Messages[{messageIndex}].Content[{contentIndex}].Cache", content[contentIndex]);
+            }
+        }
+
+        public static void ValidateAndThrow(
+            UnifiedRequest request,
+            LLMProvider provider,
+            LLMApiSurface? surface = null)
+        {
+            var errors = Validate(request, provider, surface)
                 .Where(diagnostic => diagnostic.Severity == RequestDiagnosticSeverity.Error)
                 .ToList();
             if (errors.Count > 0)
@@ -218,23 +333,278 @@ namespace LLMAbstraction.Core.Validation
             }
         }
 
-        private static void ValidateResponseFormat(
+        private static void ValidateOutputFormat(
             UnifiedRequest request,
+            ModelCapabilityProfile capabilities,
             List<RequestDiagnostic> diagnostics)
         {
-            if (request.ResponseFormat?.Type != ResponseFormatType.JsonSchema)
+            if (request.Output == null)
                 return;
 
-            AddErrorIf(diagnostics, request.ResponseFormat.JsonSchema == null,
+            if (request.Output.Kind == OutputFormatKind.Text)
+            {
+                AddErrorIf(diagnostics, request.Output.JsonSchema != null,
+                    "request.output.schema_unexpected",
+                    "JsonSchema must be omitted when Output.Kind is Text.",
+                    "Output.JsonSchema");
+                return;
+            }
+
+            var support = request.Output.Kind == OutputFormatKind.JsonSchema
+                ? capabilities.StructuredOutput
+                : capabilities.JsonObjectOutput;
+            AddCapabilityDiagnostic(
+                diagnostics,
+                support,
+                "request.output.unsupported",
+                "request.output.unknown_model",
+                $"{capabilities.Model} does not support {request.Output.Kind} output on {capabilities.Surface}.",
+                $"The abstraction has no verified {request.Output.Kind} capability data for model '{capabilities.Model}' on {capabilities.Surface}.",
+                "Output.Kind");
+
+            AddErrorIf(diagnostics,
+                capabilities.Provider == LLMProvider.Claude &&
+                request.Output.Kind == OutputFormatKind.JsonObject,
+                "claude.output.json_object_unsupported",
+                "Anthropic Messages has no unconstrained JSON-object output mode. Use JsonSchema with an explicit schema.",
+                "Output.Kind");
+
+            if (request.Output.Kind != OutputFormatKind.JsonSchema)
+            {
+                AddErrorIf(diagnostics, request.Output.JsonSchema != null,
+                    "request.output.schema_unexpected",
+                    "JsonSchema must be omitted unless Output.Kind is JsonSchema.",
+                    "Output.JsonSchema");
+                return;
+            }
+
+            AddErrorIf(diagnostics, request.Output.JsonSchema == null,
                 "request.response_schema.required",
                 "JsonSchema response format requires a schema definition.",
-                "ResponseFormat.JsonSchema");
-            if (request.ResponseFormat.JsonSchema != null)
+                "Output.JsonSchema");
+            if (request.Output.JsonSchema != null)
             {
-                AddErrorIf(diagnostics, request.ResponseFormat.JsonSchema.Schema.Count == 0,
+                AddErrorIf(diagnostics, string.IsNullOrWhiteSpace(request.Output.JsonSchema.Name),
+                    "request.response_schema.name_required",
+                    "Response JSON Schema requires a stable name.",
+                    "Output.JsonSchema.Name");
+                AddErrorIf(diagnostics, request.Output.JsonSchema.Schema.Count == 0,
                     "request.response_schema.empty",
                     "Response JSON Schema cannot be empty.",
-                    "ResponseFormat.JsonSchema.Schema");
+                    "Output.JsonSchema.Schema");
+                if (request.Output.JsonSchema.Schema.Count > 0)
+                    diagnostics.AddRange(JsonSchemaAnalyzer.Analyze(request.Output.JsonSchema));
+            }
+        }
+
+        private static void ValidateReasoning(
+            UnifiedRequest request,
+            ModelCapabilityProfile capabilities,
+            List<RequestDiagnostic> diagnostics)
+        {
+            var reasoning = request.Reasoning;
+            if (reasoning == null)
+                return;
+
+            AddCapabilityDiagnostic(
+                diagnostics,
+                capabilities.Reasoning,
+                "request.reasoning.unsupported",
+                "request.reasoning.unknown_model",
+                $"{capabilities.Model} does not support reasoning controls on {capabilities.Surface}.",
+                $"The abstraction has no verified reasoning capability data for model '{capabilities.Model}' on {capabilities.Surface}.",
+                "Reasoning");
+
+            if (reasoning.Effort is ReasoningEffort effort &&
+                capabilities.Recognition == ModelRecognition.Known &&
+                !capabilities.ReasoningEfforts.Contains(effort))
+            {
+                diagnostics.Add(Warning(
+                    "request.reasoning.effort_unsupported",
+                    $"{capabilities.Model} is not documented to support reasoning effort {effort} on {capabilities.Surface}; the value will still be sent.",
+                    "Reasoning.Effort"));
+            }
+
+            AddErrorIf(diagnostics,
+                capabilities.Provider != LLMProvider.Claude && reasoning.Anthropic != null,
+                "request.reasoning.provider_options_mismatch",
+                "Anthropic reasoning options can only be used with Anthropic.",
+                "Reasoning.Anthropic");
+            AddErrorIf(diagnostics,
+                capabilities.Provider != LLMProvider.OpenAI && reasoning.OpenAI != null,
+                "request.reasoning.provider_options_mismatch",
+                "OpenAI reasoning options can only be used with OpenAI.",
+                "Reasoning.OpenAI");
+            AddErrorIf(diagnostics,
+                capabilities.Provider != LLMProvider.Gemini && reasoning.Gemini != null,
+                "request.reasoning.provider_options_mismatch",
+                "Gemini reasoning options can only be used with Gemini.",
+                "Reasoning.Gemini");
+
+            ValidateAnthropicReasoning(request, capabilities, diagnostics);
+            ValidateOpenAIReasoning(reasoning, capabilities, diagnostics);
+            ValidateGeminiReasoning(reasoning, capabilities, diagnostics);
+        }
+
+        private static void ValidateAnthropicReasoning(
+            UnifiedRequest request,
+            ModelCapabilityProfile capabilities,
+            List<RequestDiagnostic> diagnostics)
+        {
+            if (capabilities.Provider != LLMProvider.Claude)
+                return;
+
+            if (request.Reasoning?.Anthropic == null)
+            {
+                AddErrorIf(diagnostics, request.Reasoning?.Output != null,
+                    "claude.thinking.display_requires_mode",
+                    "Anthropic reasoning output visibility requires explicit Anthropic thinking options.",
+                    "Reasoning.Output");
+                return;
+            }
+
+            var options = request.Reasoning.Anthropic;
+            var mode = options.Mode;
+            AddErrorIf(diagnostics,
+                request.Reasoning.Output != null &&
+                mode is AnthropicThinkingMode.Default or AnthropicThinkingMode.Disabled,
+                "claude.thinking.display_requires_thinking",
+                "Anthropic reasoning output visibility requires Adaptive or Manual thinking mode.",
+                "Reasoning.Output");
+            if (mode == AnthropicThinkingMode.Adaptive)
+            {
+                AddCapabilityDiagnostic(diagnostics, capabilities.AnthropicAdaptiveThinking,
+                    "claude.thinking.adaptive_unsupported", "claude.thinking.adaptive_unknown_model",
+                    $"{capabilities.Model} does not support adaptive thinking.",
+                    $"Adaptive thinking support is not verified for model '{capabilities.Model}'.",
+                    "Reasoning.Anthropic.Mode");
+            }
+            if (mode == AnthropicThinkingMode.Manual)
+            {
+                AddCapabilityDiagnostic(diagnostics, capabilities.AnthropicManualThinking,
+                    "claude.thinking.manual_unsupported", "claude.thinking.manual_unknown_model",
+                    $"{capabilities.Model} does not support manual thinking budgets.",
+                    $"Manual thinking support is not verified for model '{capabilities.Model}'.",
+                    "Reasoning.Anthropic.Mode");
+                AddErrorIf(diagnostics, options.BudgetTokens == null,
+                    "claude.thinking.budget_required",
+                    "Manual Anthropic thinking requires BudgetTokens.",
+                    "Reasoning.Anthropic.BudgetTokens");
+            }
+            else
+            {
+                AddErrorIf(diagnostics, options.BudgetTokens != null,
+                    "claude.thinking.budget_mode",
+                    "Anthropic BudgetTokens is valid only with Manual thinking mode.",
+                    "Reasoning.Anthropic.BudgetTokens");
+            }
+
+            if (options.BudgetTokens is int budget)
+            {
+                AddErrorIf(diagnostics, budget < 1024,
+                    "claude.thinking.budget_minimum",
+                    "Claude manual thinking budget must be at least 1024 tokens.",
+                    "Reasoning.Anthropic.BudgetTokens");
+                AddErrorIf(diagnostics,
+                    request.Parameters.MaxOutputTokens is int maximum && budget >= maximum,
+                    "claude.thinking.budget_output_limit",
+                    "Claude thinking budget must be lower than MaxOutputTokens.",
+                    "Reasoning.Anthropic.BudgetTokens");
+            }
+
+            if (mode == AnthropicThinkingMode.Manual &&
+                request.ToolChoice?.Type is ToolChoiceType.Required or ToolChoiceType.Specific)
+            {
+                diagnostics.Add(Error(
+                    "claude.thinking.forced_tool_choice",
+                    "Claude manual thinking supports only Auto or None tool choice.",
+                    "ToolChoice.Type"));
+            }
+
+            if (mode is AnthropicThinkingMode.Manual or AnthropicThinkingMode.Adaptive)
+            {
+                AddErrorIf(diagnostics, request.Parameters.Temperature != null,
+                    "claude.thinking.temperature_unsupported",
+                    "Claude thinking does not accept an explicit Temperature setting.",
+                    "Parameters.Temperature");
+                AddErrorIf(diagnostics, request.Parameters.TopK != null,
+                    "claude.thinking.top_k_unsupported",
+                    "Claude thinking does not accept an explicit TopK setting.",
+                    "Parameters.TopK");
+                AddErrorIf(diagnostics,
+                    request.Parameters.TopP is double topP && (topP < 0.95 || topP > 1),
+                    "claude.thinking.top_p_range",
+                    "Claude thinking accepts TopP only between 0.95 and 1.0.",
+                    "Parameters.TopP");
+            }
+
+            AddWarningIf(diagnostics,
+                capabilities.Family == "claude-5" &&
+                capabilities.Model.StartsWith("claude-opus-5", StringComparison.OrdinalIgnoreCase) &&
+                mode == AnthropicThinkingMode.Disabled &&
+                request.Reasoning.Effort is ReasoningEffort.XHigh or ReasoningEffort.Max,
+                "claude.thinking.disabled_effort_conflict",
+                "Claude Opus 5 cannot disable thinking at XHigh or Max effort.",
+                "Reasoning");
+        }
+
+        private static void ValidateOpenAIReasoning(
+            ReasoningOptions reasoning,
+            ModelCapabilityProfile capabilities,
+            List<RequestDiagnostic> diagnostics)
+        {
+            if (capabilities.Provider != LLMProvider.OpenAI || reasoning.OpenAI == null)
+                return;
+            AddErrorIf(diagnostics,
+                reasoning.Output == ReasoningOutput.Omitted && reasoning.OpenAI.Summary != null,
+                "openai.reasoning.summary_conflict",
+                "OpenAI reasoning Summary cannot be requested when portable reasoning output is Omitted.",
+                "Reasoning");
+            if (reasoning.OpenAI.Mode == OpenAIReasoningMode.Pro)
+            {
+                AddCapabilityDiagnostic(diagnostics, capabilities.OpenAIProMode,
+                    "openai.reasoning.pro_unsupported", "openai.reasoning.pro_unknown_model",
+                    $"{capabilities.Model} does not support reasoning mode Pro.",
+                    $"Pro reasoning mode is not verified for model '{capabilities.Model}'.",
+                    "Reasoning.OpenAI.Mode");
+            }
+            if (reasoning.OpenAI.Context != null)
+            {
+                AddCapabilityDiagnostic(diagnostics, capabilities.OpenAIReasoningContext,
+                    "openai.reasoning.context_unsupported", "openai.reasoning.context_unknown_model",
+                    $"{capabilities.Model} does not support persisted reasoning context controls.",
+                    $"Reasoning context controls are not verified for model '{capabilities.Model}'.",
+                    "Reasoning.OpenAI.Context");
+            }
+        }
+
+        private static void ValidateGeminiReasoning(
+            ReasoningOptions reasoning,
+            ModelCapabilityProfile capabilities,
+            List<RequestDiagnostic> diagnostics)
+        {
+            if (capabilities.Provider != LLMProvider.Gemini || reasoning.Gemini == null)
+                return;
+            if (reasoning.Gemini.ThinkingBudget is int budget)
+            {
+                AddCapabilityDiagnostic(diagnostics, capabilities.ThinkingBudget,
+                    "gemini.thinking.budget_unsupported", "gemini.thinking.budget_unknown_model",
+                    $"{capabilities.Model} does not support ThinkingBudget on {capabilities.Surface}.",
+                    $"ThinkingBudget support is not verified for model '{capabilities.Model}' on {capabilities.Surface}.",
+                    "Reasoning.Gemini.ThinkingBudget");
+                AddErrorIf(diagnostics,
+                    capabilities.Surface == LLMApiSurface.GeminiInteractions,
+                    "gemini.interactions.thinking_budget_unrepresentable",
+                    "Gemini Interactions has no ThinkingBudget field; use a portable Effort thinking level or generateContent.",
+                    "Reasoning.Gemini.ThinkingBudget");
+                AddErrorIf(diagnostics, budget < 0,
+                    "gemini.thinking.budget_range",
+                    "Gemini ThinkingBudget cannot be negative.",
+                    "Reasoning.Gemini.ThinkingBudget");
+                AddErrorIf(diagnostics, reasoning.Effort != null,
+                    "gemini.thinking.conflicting_controls",
+                    "Gemini ThinkingBudget and portable reasoning Effort cannot be selected together.",
+                    "Reasoning");
             }
         }
 
@@ -395,95 +765,104 @@ namespace LLMAbstraction.Core.Validation
         private static void ValidateProviderRules(
             UnifiedRequest request,
             LLMProvider provider,
+            ModelCapabilityProfile capabilities,
             List<RequestDiagnostic> diagnostics)
         {
+            var hasSampling = request.Parameters.Temperature != null ||
+                request.Parameters.TopP != null || request.Parameters.TopK != null;
+            if (hasSampling)
+            {
+                AddCapabilityDiagnostic(diagnostics, capabilities.SamplingControls,
+                    "request.sampling.unsupported", "request.sampling.unknown_model",
+                    $"{capabilities.Model} does not accept explicit sampling controls on {capabilities.Surface}.",
+                    $"Sampling-control support is not verified for model '{capabilities.Model}' on {capabilities.Surface}.",
+                    "Parameters");
+            }
+
             if (provider == LLMProvider.OpenAI)
             {
-                AddWarningIf(diagnostics, request.Parameters.TopK != null,
+                AddErrorIf(diagnostics, request.Parameters.TopK != null,
                     "openai.top_k.unsupported",
-                    "OpenAI Responses does not expose the portable TopK setting; it will not be sent.",
+                    "OpenAI Responses does not expose TopK.",
                     "Parameters.TopK");
-                AddWarningIf(diagnostics, request.Parameters.StopSequences?.Count > 0,
+                AddErrorIf(diagnostics, request.Parameters.StopSequences?.Count > 0,
                     "openai.stop_sequences.unsupported",
-                    "OpenAI Responses does not expose portable stop sequences; they will not be sent.",
+                    "OpenAI Responses does not expose stop sequences.",
                     "Parameters.StopSequences");
-                AddWarningIf(diagnostics, request.Reasoning?.BudgetTokens != null,
-                    "openai.reasoning_budget.unsupported",
-                    "OpenAI reasoning does not use the portable token budget; it will not be sent.",
-                    "Reasoning.BudgetTokens");
-            }
-
-            if (provider == LLMProvider.Claude &&
-                request.Reasoning?.Enabled != false &&
-                (request.Reasoning?.BudgetTokens != null ||
-                 string.Equals(request.Reasoning?.Effort, "adaptive", StringComparison.OrdinalIgnoreCase)) &&
-                request.ToolChoice?.Type is ToolChoiceType.Required or ToolChoiceType.Specific)
-            {
-                diagnostics.Add(Error(
-                    "claude.thinking.forced_tool_choice",
-                    "Claude thinking supports only Auto or None tool choice; forced tool choice would be rejected.",
-                    "ToolChoice.Type"));
-            }
-
-            if (provider == LLMProvider.Claude && request.Reasoning?.BudgetTokens is int budget)
-            {
-                AddErrorIf(diagnostics, budget < 1024,
-                    "claude.thinking.budget_minimum",
-                    "Claude manual thinking budget must be at least 1024 tokens.",
-                    "Reasoning.BudgetTokens");
-                AddErrorIf(diagnostics,
-                    request.Parameters.MaxOutputTokens is int maximum && budget >= maximum,
-                    "claude.thinking.budget_output_limit",
-                    "Claude thinking budget must be lower than MaxOutputTokens.",
-                    "Reasoning.BudgetTokens");
+                ValidateNonAnthropicCitationInputs(request, "OpenAI Responses", diagnostics);
             }
 
             if (provider == LLMProvider.Claude)
             {
-                AddWarningIf(diagnostics, request.ToolChoice?.DisableParallelToolUse != null,
+                AddErrorIf(diagnostics, request.ToolChoice?.DisableParallelToolUse != null,
                     "claude.parallel_tool_control.unmapped",
-                    "Claude DisableParallelToolUse is not mapped by the portable tool-choice converter.",
+                    "Claude DisableParallelToolUse is not currently mapped by the converter.",
                     "ToolChoice.DisableParallelToolUse");
-                AddWarningIf(diagnostics,
-                    request.Reasoning?.Summary != null || request.Reasoning?.IncludeThoughts != null,
-                    "claude.reasoning_display.unmapped",
-                    "Claude reasoning summary/display controls are provider-specific and are not mapped by this portable request.",
-                    "Reasoning");
-                AddWarningIf(diagnostics, request.Metadata?.Tags?.Count > 0,
+                AddErrorIf(diagnostics, request.Metadata?.Tags?.Count > 0,
                     "claude.metadata_tags.unsupported",
-                    "Claude request metadata tags are not sent; only UserId is mapped.",
+                    "Claude request metadata does not accept portable tags; only UserId is supported.",
                     "Metadata.Tags");
-            }
-
-            if (provider == LLMProvider.Gemini &&
-                request.Reasoning?.BudgetTokens != null &&
-                !string.IsNullOrWhiteSpace(request.Reasoning.Effort))
-            {
-                diagnostics.Add(Error(
-                    "gemini.thinking.conflicting_controls",
-                    "Gemini ThinkingBudget and ThinkingLevel cannot be selected together in one portable request.",
-                    "Reasoning"));
+                AddErrorIf(diagnostics,
+                    request.Output?.Kind == OutputFormatKind.JsonSchema &&
+                    (request.Messages.SelectMany(message => message.Content)
+                        .OfType<DocumentContent>().Any(document => document.CitationsEnabled == true) ||
+                     request.Messages.SelectMany(message => message.Content)
+                        .OfType<SearchResultContent>().Any(result => result.CitationsEnabled == true)),
+                    "claude.citations.structured_output_conflict",
+                    "Anthropic document citations cannot be combined with structured output.",
+                    "Output.Kind");
+                foreach (var result in request.Messages.SelectMany(message => message.Content).OfType<SearchResultContent>())
+                {
+                    AddErrorIf(diagnostics, string.IsNullOrWhiteSpace(result.Source),
+                        "claude.search_result.source_required",
+                        "Anthropic search-result input requires Source.", "Messages.Content.Source");
+                    AddErrorIf(diagnostics, string.IsNullOrWhiteSpace(result.Title),
+                        "claude.search_result.title_required",
+                        "Anthropic search-result input requires Title.", "Messages.Content.Title");
+                    AddErrorIf(diagnostics, result.Content.Count == 0,
+                        "claude.search_result.content_required",
+                        "Anthropic search-result input requires at least one text block.", "Messages.Content.Content");
+                    AddErrorIf(diagnostics, result.Content.Any(text => text.Cache != null),
+                        "claude.search_result.inner_cache_unrepresentable",
+                        "Cache the search-result block itself; nested search-result text cannot carry cache directives.",
+                        "Messages.Content.Content.Cache");
+                }
             }
 
             if (provider == LLMProvider.Gemini)
             {
-                AddWarningIf(diagnostics, request.ToolChoice?.DisableParallelToolUse != null,
+                AddErrorIf(diagnostics,
+                    capabilities.Surface == LLMApiSurface.GeminiInteractions &&
+                    request.Parameters.Temperature != null,
+                    "gemini.interactions.temperature_unrepresentable",
+                    "Gemini Interactions does not expose Temperature; use generateContent.",
+                    "Parameters.Temperature");
+                AddErrorIf(diagnostics,
+                    capabilities.Surface == LLMApiSurface.GeminiInteractions &&
+                    request.Parameters.TopP != null,
+                    "gemini.interactions.top_p_unrepresentable",
+                    "Gemini Interactions does not expose TopP; use generateContent.",
+                    "Parameters.TopP");
+                AddErrorIf(diagnostics,
+                    capabilities.Surface == LLMApiSurface.GeminiInteractions &&
+                    request.Parameters.TopK != null,
+                    "gemini.interactions.top_k_unrepresentable",
+                    "Gemini Interactions does not expose TopK; use generateContent.",
+                    "Parameters.TopK");
+                AddErrorIf(diagnostics, request.ToolChoice?.DisableParallelToolUse != null,
                     "gemini.parallel_tool_control.unmapped",
-                    "Gemini DisableParallelToolUse is not mapped by the portable tool-choice converter.",
+                    "Gemini DisableParallelToolUse is not currently mapped by the converter.",
                     "ToolChoice.DisableParallelToolUse");
-                AddWarningIf(diagnostics, request.Tools?.OfType<FunctionTool>().Any(tool => tool.Strict != null) == true,
+                AddErrorIf(diagnostics, request.Tools?.OfType<FunctionTool>().Any(tool => tool.Strict != null) == true,
                     "gemini.tool_strict.unmapped",
-                    "Gemini tool Strict values are not represented by this generateContent function declaration.",
+                    "Gemini function declarations do not map the portable Strict setting.",
                     "Tools.Strict");
-                AddWarningIf(diagnostics, request.Reasoning?.Summary != null,
-                    "gemini.reasoning_summary.unmapped",
-                    "Gemini does not use the portable reasoning Summary field; it will not be sent.",
-                    "Reasoning.Summary");
-                AddWarningIf(diagnostics,
+                AddErrorIf(diagnostics,
                     request.Metadata?.UserId != null || request.Metadata?.Tags?.Count > 0,
                     "gemini.metadata.unsupported",
-                    "Portable request metadata is not sent by the Gemini generateContent converter.",
+                    "Portable request metadata is not supported by the selected Gemini surface.",
                     "Metadata");
+                ValidateNonAnthropicCitationInputs(request, "Gemini", diagnostics);
             }
 
             foreach (var message in request.Messages)
@@ -495,6 +874,26 @@ namespace LLMAbstraction.Core.Validation
                         "Every tool result requires ToolCallId.",
                         "Messages.Content.ToolCallId");
                 }
+            }
+        }
+
+        private static void ValidateNonAnthropicCitationInputs(
+            UnifiedRequest request,
+            string providerName,
+            List<RequestDiagnostic> diagnostics)
+        {
+            var blocks = request.Messages.SelectMany(message => message.Content).ToList();
+            AddErrorIf(diagnostics, blocks.OfType<SearchResultContent>().Any(),
+                "request.search_result_input.unrepresentable",
+                $"{providerName} has no input block equivalent to Anthropic's citable search_result block.",
+                "Messages.Content");
+            foreach (var document in blocks.OfType<DocumentContent>())
+            {
+                AddErrorIf(diagnostics,
+                    document.Title != null || document.Context != null || document.CitationsEnabled != null,
+                    "request.document_citation_options.unrepresentable",
+                    $"{providerName} can send the document, but cannot represent Anthropic title, context, or citation-enablement fields.",
+                    "Messages.Content");
             }
         }
 
@@ -535,11 +934,39 @@ namespace LLMAbstraction.Core.Validation
             });
         }
 
+        private static void AddCapabilityDiagnostic(
+            List<RequestDiagnostic> diagnostics,
+            CapabilitySupport support,
+            string unsupportedCode,
+            string unknownCode,
+            string unsupportedMessage,
+            string unknownMessage,
+            string? propertyPath)
+        {
+            if (support == CapabilitySupport.Supported)
+                return;
+            diagnostics.Add(Warning(
+                support == CapabilitySupport.Unsupported ? unsupportedCode : unknownCode,
+                support == CapabilitySupport.Unsupported ? unsupportedMessage : unknownMessage,
+                propertyPath));
+        }
+
         private static RequestDiagnostic Error(string code, string message, string? propertyPath)
         {
             return new RequestDiagnostic
             {
                 Severity = RequestDiagnosticSeverity.Error,
+                Code = code,
+                Message = message,
+                PropertyPath = propertyPath
+            };
+        }
+
+        private static RequestDiagnostic Warning(string code, string message, string? propertyPath)
+        {
+            return new RequestDiagnostic
+            {
+                Severity = RequestDiagnosticSeverity.Warning,
                 Code = code,
                 Message = message,
                 PropertyPath = propertyPath

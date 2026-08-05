@@ -19,7 +19,10 @@ namespace LLMAbstraction.Providers.Claude.Models
         public List<ClaudeMessage> Messages { get; set; } = new();
 
         [JsonPropertyName("system")]
-        public string? System { get; set; }
+        public object? System { get; set; }
+
+        [JsonPropertyName("cache_control")]
+        public ClaudeCacheControl? CacheControl { get; set; }
 
         [JsonPropertyName("temperature")]
         public double? Temperature { get; set; }
@@ -107,6 +110,18 @@ namespace LLMAbstraction.Providers.Claude.Models
 
         [JsonPropertyName("response_inclusion")]
         public string? ResponseInclusion { get; set; }
+
+        [JsonPropertyName("cache_control")]
+        public ClaudeCacheControl? CacheControl { get; set; }
+    }
+
+    public sealed class ClaudeCacheControl
+    {
+        [JsonPropertyName("type")]
+        public string Type { get; set; } = "ephemeral";
+
+        [JsonPropertyName("ttl")]
+        public string? Ttl { get; set; }
     }
 
     /// <summary>
@@ -198,8 +213,26 @@ namespace LLMAbstraction.Providers.Claude.Models
         [JsonPropertyName("ephemeral_1h_input_tokens")]
         public int? Ephemeral1hInputTokens { get; set; }
 
+        [JsonPropertyName("cache_creation")]
+        public ClaudeCacheCreationUsage? CacheCreation { get; set; }
+
         [JsonPropertyName("server_tool_use")]
         public Dictionary<string, int>? ServerToolUse { get; set; }
+    }
+
+    public sealed class ClaudeCacheCreationUsage
+    {
+        [JsonPropertyName("ephemeral_5m_input_tokens")]
+        public int? Ephemeral5mInputTokens { get; set; }
+
+        [JsonPropertyName("ephemeral_1h_input_tokens")]
+        public int? Ephemeral1hInputTokens { get; set; }
+    }
+
+    public sealed class ClaudeMessageTokensCount
+    {
+        [JsonPropertyName("input_tokens")]
+        public int InputTokens { get; set; }
     }
 
     /// <summary>
@@ -209,6 +242,9 @@ namespace LLMAbstraction.Providers.Claude.Models
     {
         [JsonPropertyName("format")]
         public ClaudeOutputFormat? Format { get; set; }
+
+        [JsonPropertyName("effort")]
+        public string? Effort { get; set; }
     }
 
     /// <summary>
@@ -233,6 +269,9 @@ namespace LLMAbstraction.Providers.Claude.Models
 
         [JsonPropertyName("budget_tokens")]
         public int? BudgetTokens { get; set; }
+
+        [JsonPropertyName("display")]
+        public string? Display { get; set; }
     }
 
     /// <summary>

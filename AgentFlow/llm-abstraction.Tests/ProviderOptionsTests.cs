@@ -59,11 +59,14 @@ public sealed class ProviderOptionsTests
     public void GeminiAdditionalOptionsAndSpecialSafetySettingsAreSerialized()
     {
         var request = BasicRequest("gemini-3.5-flash");
+        request.Cache = new PromptCacheOptions
+        {
+            Gemini = new GeminiPromptCacheOptions { CachedContentName = "cachedContents/123" }
+        };
         request.ProviderOptions = new ProviderOptions
         {
             Gemini = new Dictionary<string, object>
             {
-                ["cachedContent"] = "cachedContents/123",
                 ["safetySettings"] = new List<Dictionary<string, object>>
                 {
                     new()

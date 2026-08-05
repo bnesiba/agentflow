@@ -27,8 +27,101 @@ namespace LLMAbstraction.Providers.Gemini.Models
         [JsonPropertyName("safetySettings")]
         public List<Dictionary<string, object>>? SafetySettings { get; set; }
 
+        [JsonPropertyName("cachedContent")]
+        public string? CachedContent { get; set; }
+
         [JsonExtensionData]
         public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
+    }
+
+    public sealed class GeminiCountTokensRequest
+    {
+        [JsonPropertyName("generateContentRequest")]
+        public GeminiGenerateRequest GenerateContentRequest { get; set; } = new();
+    }
+
+    public sealed class GeminiCachedContent
+    {
+        [JsonPropertyName("contents")]
+        public List<GeminiContent>? Contents { get; set; }
+
+        [JsonPropertyName("tools")]
+        public List<GeminiTool>? Tools { get; set; }
+
+        [JsonPropertyName("systemInstruction")]
+        public GeminiContent? SystemInstruction { get; set; }
+
+        [JsonPropertyName("toolConfig")]
+        public GeminiToolConfig? ToolConfig { get; set; }
+
+        [JsonPropertyName("ttl")]
+        public string? Ttl { get; set; }
+
+        [JsonPropertyName("expireTime")]
+        public DateTimeOffset? ExpireTime { get; set; }
+
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("displayName")]
+        public string? DisplayName { get; set; }
+
+        [JsonPropertyName("model")]
+        public string? Model { get; set; }
+
+        [JsonPropertyName("createTime")]
+        public DateTimeOffset? CreateTime { get; set; }
+
+        [JsonPropertyName("updateTime")]
+        public DateTimeOffset? UpdateTime { get; set; }
+
+        [JsonPropertyName("usageMetadata")]
+        public GeminiCachedContentUsage? UsageMetadata { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
+    }
+
+    public sealed class GeminiCachedContentUsage
+    {
+        [JsonPropertyName("totalTokenCount")]
+        public int? TotalTokenCount { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
+    }
+
+    public sealed class GeminiCachedContentList
+    {
+        [JsonPropertyName("cachedContents")]
+        public List<GeminiCachedContent> CachedContents { get; set; } = new();
+
+        [JsonPropertyName("nextPageToken")]
+        public string? NextPageToken { get; set; }
+    }
+
+    public sealed class GeminiCountTokensResponse
+    {
+        [JsonPropertyName("totalTokens")]
+        public int TotalTokens { get; set; }
+
+        [JsonPropertyName("cachedContentTokenCount")]
+        public int? CachedContentTokenCount { get; set; }
+
+        [JsonPropertyName("promptTokensDetails")]
+        public List<GeminiModalityTokenCount>? PromptTokensDetails { get; set; }
+
+        [JsonPropertyName("cacheTokensDetails")]
+        public List<GeminiModalityTokenCount>? CacheTokensDetails { get; set; }
+    }
+
+    public sealed class GeminiModalityTokenCount
+    {
+        [JsonPropertyName("modality")]
+        public string? Modality { get; set; }
+
+        [JsonPropertyName("tokenCount")]
+        public int TokenCount { get; set; }
     }
 
     /// <summary>
@@ -320,5 +413,8 @@ namespace LLMAbstraction.Providers.Gemini.Models
 
         [JsonPropertyName("thoughtsTokenCount")]
         public int? ThoughtsTokenCount { get; set; }
+
+        [JsonPropertyName("cachedContentTokenCount")]
+        public int? CachedContentTokenCount { get; set; }
     }
 }

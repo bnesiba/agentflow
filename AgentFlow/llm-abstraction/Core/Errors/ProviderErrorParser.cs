@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
+using LLMAbstraction.Core.Transport;
 
 namespace LLMAbstraction.Core.Errors
 {
@@ -10,7 +11,8 @@ namespace LLMAbstraction.Core.Errors
         public static LLMApiException Create(
             LLMProvider provider,
             HttpResponseMessage response,
-            string rawResponse)
+            string rawResponse,
+            TransportMetadata? transport = null)
         {
             string? message = null;
             string? code = null;
@@ -55,7 +57,8 @@ namespace LLMAbstraction.Core.Errors
                 requestId,
                 GetRetryAfter(response),
                 rawResponse,
-                details);
+                details,
+                transport);
         }
 
         private static string? GetString(JsonElement value, string property)

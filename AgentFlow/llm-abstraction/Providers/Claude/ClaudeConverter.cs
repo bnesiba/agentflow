@@ -19,7 +19,8 @@ namespace LLMAbstraction.Providers.Claude
         private static readonly HashSet<string> ProtectedRequestFields = new(StringComparer.Ordinal)
         {
             "model", "max_tokens", "messages", "system", "temperature", "top_p", "top_k",
-            "stop_sequences", "stream", "tools", "tool_choice", "output_config", "thinking", "metadata"
+            "stop_sequences", "stream", "tools", "tool_choice", "output_config", "thinking", "metadata",
+            "cache_control"
         };
         private static readonly HashSet<string> SeparatelyHandledOptionFields = new(StringComparer.Ordinal)
         {
@@ -32,7 +33,10 @@ namespace LLMAbstraction.Providers.Claude
 
         public ClaudeMessageRequest ConvertRequest(UnifiedRequest request)
         {
-            LLMRequestValidator.ValidateAndThrow(request, LLMProvider.Claude);
+            LLMRequestValidator.ValidateAndThrow(
+                request,
+                LLMProvider.Claude,
+                LLMApiSurface.AnthropicMessages);
             var thinking = ConvertReasoning(request.Reasoning);
 
             var claudeRequest = new ClaudeMessageRequest
@@ -40,7 +44,10 @@ namespace LLMAbstraction.Providers.Claude
                 Model = request.Model,
                 MaxTokens = request.Parameters.MaxOutputTokens ?? 1024, // Claude requires max_tokens
                 Messages = ConvertMessages(request.Messages),
-                System = UnifiedRequestNormalization.CombineInstructions(request),
+                System = ConvertSystem(request),
+                CacheControl = request.Cache?.Mode == PromptCacheMode.PreferReuse
+                    ? ConvertCacheControl(request.Cache.Ttl)
+                    : null,
                 Temperature = SupportsTemperature(thinking) ? request.Parameters.Temperature : null,
                 TopP = SupportsTopP(thinking, request.Parameters.TopP) ? request.Parameters.TopP : null,
                 TopK = SupportsTopK(thinking) ? request.Parameters.TopK : null,
@@ -64,11 +71,7 @@ namespace LLMAbstraction.Providers.Claude
                 claudeRequest.ToolChoice = ConvertToolChoice(request.ToolChoice, request.Tools);
             }
 
-            // Convert response format if present (Claude native support via output_config)
-            if (request.ResponseFormat != null)
-            {
-                claudeRequest.OutputConfig = ConvertResponseFormat(request.ResponseFormat);
-            }
+            claudeRequest.OutputConfig = ConvertOutputConfig(request.Output, request.Reasoning);
 
             return claudeRequest;
         }
@@ -95,6 +98,8 @@ namespace LLMAbstraction.Providers.Claude
 
         public UnifiedResponse ConvertResponse(ClaudeMessageResponse response)
         {
+            var message = ConvertMessage(response);
+            EvidenceProjector.Project(message, ProviderIds.Claude);
             return new UnifiedResponse
             {
                 Id = response.Id,
@@ -104,7 +109,7 @@ namespace LLMAbstraction.Providers.Claude
                     new ResponseChoice
                     {
                         Index = 0,
-                        Message = ConvertMessage(response),
+                        Message = message,
                         FinishReason = ConvertFinishReason(response.StopReason)
                     }
                 },
@@ -114,6 +119,9 @@ namespace LLMAbstraction.Providers.Claude
                     OutputTokens = response.Usage.OutputTokens,
                     TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens,
                     CacheCreationTokens = response.Usage.CacheCreationInputTokens,
+                    CacheWriteTokens = response.Usage.CacheCreationInputTokens,
+                    CacheWrite5MinuteTokens = response.Usage.CacheCreation?.Ephemeral5mInputTokens ?? response.Usage.Ephemeral5mInputTokens,
+                    CacheWrite1HourTokens = response.Usage.CacheCreation?.Ephemeral1hInputTokens ?? response.Usage.Ephemeral1hInputTokens,
                     CacheReadTokens = response.Usage.CacheReadInputTokens,
                     ProviderMetadata = response.Usage.ServerToolUse != null
                         ? new Dictionary<string, object>
@@ -167,6 +175,7 @@ namespace LLMAbstraction.Providers.Claude
             // If single text block, use string shorthand
             if (content.Count == 1 &&
                 content[0] is TextContent textContent &&
+                content[0].Cache == null &&
                 !HasClaudeNativeRepresentation(textContent))
             {
                 return textContent.Text;
@@ -186,17 +195,17 @@ namespace LLMAbstraction.Providers.Claude
                 switch (block)
                 {
                     case TextContent text:
-                        blocks.Add(new
+                        blocks.Add(ApplyCacheControl(new
                         {
                             type = "text",
                             text = text.Text
-                        });
+                        }, block.Cache));
                         break;
 
                     case ImageContent image:
                         if (!string.IsNullOrEmpty(image.Source.Url))
                         {
-                            blocks.Add(new
+                            blocks.Add(ApplyCacheControl(new
                             {
                                 type = "image",
                                 source = new
@@ -204,11 +213,11 @@ namespace LLMAbstraction.Providers.Claude
                                     type = "url",
                                     url = image.Source.Url
                                 }
-                            });
+                            }, block.Cache));
                         }
                         else if (!string.IsNullOrEmpty(image.Source.Data))
                         {
-                            blocks.Add(new
+                            blocks.Add(ApplyCacheControl(new
                             {
                                 type = "image",
                                 source = new
@@ -217,7 +226,7 @@ namespace LLMAbstraction.Providers.Claude
                                     media_type = image.Source.MediaType,
                                     data = image.Source.Data
                                 }
-                            });
+                            }, block.Cache));
                         }
                         else
                         {
@@ -226,27 +235,31 @@ namespace LLMAbstraction.Providers.Claude
                         break;
 
                     case MediaContent media:
-                        blocks.Add(ConvertMediaContent(media));
+                        blocks.Add(ApplyCacheControl(ConvertMediaContent(media), block.Cache));
+                        break;
+
+                    case SearchResultContent searchResult:
+                        blocks.Add(ApplyCacheControl(ConvertSearchResult(searchResult), block.Cache));
                         break;
 
                     case ToolCallContent toolCall:
-                        blocks.Add(new
+                        blocks.Add(ApplyCacheControl(new
                         {
                             type = "tool_use",
                             id = toolCall.Id,
                             name = toolCall.Name,
                             input = toolCall.Input
-                        });
+                        }, block.Cache));
                         break;
 
                     case ToolResultContent toolResult:
-                        blocks.Add(new
+                        blocks.Add(ApplyCacheControl(new
                         {
                             type = "tool_result",
                             tool_use_id = toolResult.ToolCallId,
                             content = toolResult.Output,
                             is_error = toolResult.IsError
-                        });
+                        }, block.Cache));
                         break;
 
                     case ProviderNativeContent:
@@ -262,8 +275,63 @@ namespace LLMAbstraction.Providers.Claude
             return blocks;
         }
 
+        private static object? ConvertSystem(UnifiedRequest request)
+        {
+            var instructions = UnifiedRequestNormalization.CombineInstructions(request);
+            if (instructions == null || request.InstructionsCache == null)
+                return instructions;
+            return new List<object>
+            {
+                ApplyCacheControl(new { type = "text", text = instructions }, request.InstructionsCache)
+            };
+        }
+
+        private static object ApplyCacheControl(object value, PromptCacheDirective? directive)
+        {
+            if (directive == null)
+                return value;
+            var json = JsonSerializer.SerializeToElement(value, NativeJsonOptions);
+            var result = json.EnumerateObject().ToDictionary(
+                property => property.Name,
+                property => (object?)property.Value.Clone());
+            result["cache_control"] = ConvertCacheControl(directive.Ttl);
+            return result;
+        }
+
+        private static ClaudeCacheControl ConvertCacheControl(PromptCacheTtl? ttl) => new()
+        {
+            Ttl = ttl switch
+            {
+                PromptCacheTtl.FiveMinutes => "5m",
+                PromptCacheTtl.OneHour => "1h",
+                _ => null
+            }
+        };
+
         private static object ConvertMediaContent(MediaContent media)
         {
+            if (media is DocumentContent document)
+            {
+                var portableMedia = new MediaContent
+                {
+                    MediaType = document.MediaType,
+                    Source = document.Source
+                };
+                var json = JsonSerializer.SerializeToElement(
+                    ConvertMediaContent(portableMedia), NativeJsonOptions);
+                var result = json.EnumerateObject().ToDictionary(
+                    property => property.Name,
+                    property => (object?)property.Value.Clone());
+                if (document.Title != null) result["title"] = document.Title;
+                if (document.Context != null) result["context"] = document.Context;
+                if (document.CitationsEnabled != null)
+                    result["citations"] = new Dictionary<string, object>
+                    {
+                        ["enabled"] = document.CitationsEnabled.Value
+                    };
+                return result;
+            }
+
             var contentType = media.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
                 ? "image"
                 : media.MediaType == "application/pdf" || media.MediaType == "text/plain"
@@ -314,13 +382,29 @@ namespace LLMAbstraction.Providers.Claude
             throw new NotSupportedException("Claude media content requires a file ID, URL, file URI, or base64 data.");
         }
 
+        private static object ConvertSearchResult(SearchResultContent result) =>
+            new Dictionary<string, object?>
+            {
+                ["type"] = "search_result",
+                ["source"] = result.Source,
+                ["title"] = result.Title,
+                ["content"] = result.Content.Select(text => new Dictionary<string, object>
+                {
+                    ["type"] = "text",
+                    ["text"] = text.Text
+                }).ToList(),
+                ["citations"] = result.CitationsEnabled == null
+                    ? null
+                    : new Dictionary<string, object> { ["enabled"] = result.CitationsEnabled.Value }
+            };
+
         private ClaudeTool ConvertTool(LLMTool tool)
         {
             return tool switch
             {
                 FunctionTool function => ConvertFunctionTool(function),
                 ProviderTool { Capability: ProviderToolCapability.WebSearch } provider
-                    => ConvertWebSearchTool((WebSearchOptions)provider.Options),
+                    => ConvertWebSearchTool(provider),
                 ProviderTool provider => throw new NotSupportedException(
                     $"Anthropic provider tool '{provider.Capability}' is not implemented."),
                 _ => throw new NotSupportedException($"Unknown tool type '{tool.GetType().Name}'.")
@@ -334,12 +418,14 @@ namespace LLMAbstraction.Providers.Claude
                 Name = tool.Name,
                 Description = tool.Description,
                 InputSchema = tool.Parameters,
-                Strict = tool.Strict
+                Strict = tool.Strict,
+                CacheControl = tool.Cache == null ? null : ConvertCacheControl(tool.Cache.Ttl)
             };
         }
 
-        private static ClaudeTool ConvertWebSearchTool(WebSearchOptions options)
+        private static ClaudeTool ConvertWebSearchTool(ProviderTool tool)
         {
+            var options = (WebSearchOptions)tool.Options;
             var native = options.Anthropic;
             var type = native?.IncludeFullResults != null
                 ? "web_search_20260318"
@@ -363,7 +449,8 @@ namespace LLMAbstraction.Providers.Claude
                     true => "full",
                     false => "excluded",
                     _ => null
-                }
+                },
+                CacheControl = tool.Cache == null ? null : ConvertCacheControl(tool.Cache.Ttl)
             };
         }
 
@@ -435,17 +522,7 @@ namespace LLMAbstraction.Providers.Claude
                     citations.ValueKind == JsonValueKind.Array)
                 {
                     foreach (var citation in citations.EnumerateArray())
-                    {
-                        text.Citations.Add(new Citation
-                        {
-                            Url = GetString(citation, "url"),
-                            Title = GetString(citation, "title"),
-                            StartIndex = GetInt(citation, "start_index"),
-                            EndIndex = GetInt(citation, "end_index"),
-                            CitedText = GetString(citation, "cited_text"),
-                            NativeRepresentation = ProviderNativeRepresentation.Create(ProviderIds.Claude, citation)
-                        });
-                    }
+                        text.Citations.Add(ConvertCitation(citation));
                 }
                 return text;
             }
@@ -533,6 +610,98 @@ namespace LLMAbstraction.Providers.Claude
             return GetString(content, "type") == "web_search_tool_result_error";
         }
 
+        private static Citation ConvertCitation(JsonElement citation)
+        {
+            var type = GetString(citation, "type");
+            SourceLocation? location = type switch
+            {
+                "char_location" => CreateCharacterLocation(citation),
+                "page_location" => CreatePageLocation(citation),
+                "content_block_location" or "search_result_location" =>
+                    CreateBlockLocation(citation),
+                _ => null
+            };
+            var metadata = new Dictionary<string, object>();
+            AddIntMetadata(metadata, citation, "document_index", "claude.documentIndex");
+            AddIntMetadata(metadata, citation, "search_result_index", "claude.searchResultIndex");
+            AddStringMetadata(metadata, citation, "source", "claude.source");
+            AddStringMetadata(metadata, citation, "encrypted_index", "claude.encryptedIndex");
+
+            return new Citation
+            {
+                Url = GetString(citation, "url"),
+                Title = GetString(citation, "title") ?? GetString(citation, "document_title"),
+                FileId = GetString(citation, "file_id"),
+                CitedText = GetString(citation, "cited_text"),
+                SourceLocation = location,
+                ProviderMetadata = metadata.Count == 0 ? null : metadata,
+                NativeRepresentation = ProviderNativeRepresentation.Create(ProviderIds.Claude, citation)
+            };
+        }
+
+        private static CharacterRangeLocation? CreateCharacterLocation(JsonElement citation)
+        {
+            var start = GetInt(citation, "start_char_index");
+            var end = GetInt(citation, "end_char_index");
+            return start != null && end != null
+                ? new CharacterRangeLocation
+                {
+                    StartIndex = start.Value,
+                    EndIndex = end.Value,
+                    Unit = TextIndexUnit.ProviderDefined,
+                    EndExclusive = true
+                }
+                : null;
+        }
+
+        private static PageRangeLocation? CreatePageLocation(JsonElement citation)
+        {
+            var start = GetInt(citation, "start_page_number");
+            var end = GetInt(citation, "end_page_number");
+            return start != null && end != null
+                ? new PageRangeLocation
+                {
+                    StartPage = start.Value,
+                    EndPage = end.Value,
+                    EndInclusive = null
+                }
+                : null;
+        }
+
+        private static ContentBlockRangeLocation? CreateBlockLocation(JsonElement citation)
+        {
+            var start = GetInt(citation, "start_block_index");
+            var end = GetInt(citation, "end_block_index");
+            return start != null && end != null
+                ? new ContentBlockRangeLocation
+                {
+                    StartBlockIndex = start.Value,
+                    EndBlockIndex = end.Value,
+                    EndExclusive = true
+                }
+                : null;
+        }
+
+        private static void AddIntMetadata(
+            Dictionary<string, object> metadata,
+            JsonElement element,
+            string property,
+            string key)
+        {
+            if (GetInt(element, property) is int value)
+                metadata[key] = value;
+        }
+
+        private static void AddStringMetadata(
+            Dictionary<string, object> metadata,
+            JsonElement element,
+            string property,
+            string key)
+        {
+            if (GetString(element, property) is string value)
+                metadata[key] = value;
+        }
+
         private static string? GetString(JsonElement element, string property) =>
             element.ValueKind == JsonValueKind.Object &&
             element.TryGetProperty(property, out var value) &&
@@ -559,32 +728,43 @@ namespace LLMAbstraction.Providers.Claude
             return false;
         }
 
-        private ClaudeOutputConfig? ConvertResponseFormat(ResponseFormat responseFormat)
+        private static ClaudeOutputConfig? ConvertOutputConfig(
+            OutputFormat? output,
+            ReasoningOptions? reasoning)
         {
-            if (responseFormat.Type == ResponseFormatType.Text)
+            var effort = reasoning?.Effort == null
+                ? null
+                : ToWireValue(reasoning.Effort.Value);
+            if ((output == null || output.Kind == OutputFormatKind.Text) && effort == null)
                 return null;
 
             var outputConfig = new ClaudeOutputConfig
             {
-                Format = new ClaudeOutputFormat()
+                Effort = effort
             };
 
-            switch (responseFormat.Type)
+            switch (output?.Kind)
             {
-                case ResponseFormatType.Json:
-                    outputConfig.Format.Type = "json_schema";
-                    outputConfig.Format.Schema = new Dictionary<string, object>
+                case OutputFormatKind.JsonObject:
+                    outputConfig.Format = new ClaudeOutputFormat
                     {
-                        { "type", "object" },
-                        { "additionalProperties", true }
+                        Type = "json_schema",
+                        Schema = new Dictionary<string, object>
+                        {
+                            { "type", "object" },
+                            { "additionalProperties", true }
+                        }
                     };
                     break;
 
-                case ResponseFormatType.JsonSchema:
-                    outputConfig.Format.Type = "json_schema";
-                    if (responseFormat.JsonSchema != null)
+                case OutputFormatKind.JsonSchema:
+                    if (output.JsonSchema != null)
                     {
-                        outputConfig.Format.Schema = responseFormat.JsonSchema.Schema;
+                        outputConfig.Format = new ClaudeOutputFormat
+                        {
+                            Type = "json_schema",
+                            Schema = output.JsonSchema.Schema
+                        };
                     }
                     break;
             }
@@ -597,28 +777,44 @@ namespace LLMAbstraction.Providers.Claude
             if (reasoning == null)
                 return null;
 
-            if (reasoning.Enabled == false)
-            {
-                return new ClaudeThinkingConfig { Type = "disabled" };
-            }
+            var options = reasoning.Anthropic;
+            if (options == null || options.Mode == AnthropicThinkingMode.Default)
+                return null;
 
-            if (reasoning.BudgetTokens != null)
+            return new ClaudeThinkingConfig
             {
-                return new ClaudeThinkingConfig
+                Type = options.Mode switch
                 {
-                    Type = "enabled",
-                    BudgetTokens = reasoning.BudgetTokens
-                };
-            }
-
-            if (!string.IsNullOrEmpty(reasoning.Effort) &&
-                reasoning.Effort.Equals("adaptive", StringComparison.OrdinalIgnoreCase))
-            {
-                return new ClaudeThinkingConfig { Type = "adaptive" };
-            }
-
-            return null;
+                    AnthropicThinkingMode.Disabled => "disabled",
+                    AnthropicThinkingMode.Adaptive => "adaptive",
+                    AnthropicThinkingMode.Manual => "enabled",
+                    _ => throw new ArgumentOutOfRangeException()
+                },
+                BudgetTokens = options.Mode == AnthropicThinkingMode.Manual
+                    ? options.BudgetTokens
+                    : null,
+                Display = options.Mode == AnthropicThinkingMode.Disabled
+                    ? null
+                    : reasoning.Output switch
+                    {
+                        ReasoningOutput.Omitted => "omitted",
+                        ReasoningOutput.Summary => "summarized",
+                        _ => null
+                    }
+            };
         }
+
+        private static string ToWireValue(ReasoningEffort effort) => effort switch
+        {
+            ReasoningEffort.None => "none",
+            ReasoningEffort.Minimal => "minimal",
+            ReasoningEffort.Low => "low",
+            ReasoningEffort.Medium => "medium",
+            ReasoningEffort.High => "high",
+            ReasoningEffort.XHigh => "xhigh",
+            ReasoningEffort.Max => "max",
+            _ => throw new ArgumentOutOfRangeException(nameof(effort), effort, null)
+        };
 
         private FinishReason ConvertFinishReason(string? reason)
         {

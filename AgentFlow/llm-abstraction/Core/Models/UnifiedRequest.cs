@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using LLMAbstraction.Core.Transport;
 
 namespace LLMAbstraction.Core.Models
 {
@@ -23,16 +24,6 @@ namespace LLMAbstraction.Core.Models
         public string? Instructions { get; set; }
 
         /// <summary>
-        /// Backward-compatible alias for Instructions.
-        /// </summary>
-        [System.Obsolete("Use Instructions instead.")]
-        public string? System
-        {
-            get => Instructions;
-            set => Instructions = value;
-        }
-
-        /// <summary>
         /// Generation parameters
         /// </summary>
         public GenerationParameters Parameters { get; set; } = new();
@@ -47,10 +38,10 @@ namespace LLMAbstraction.Core.Models
         /// </summary>
         public ToolChoice? ToolChoice { get; set; }
 
-    /// <summary>
-        /// Structured output schema (JSON Schema)
+        /// <summary>
+        /// Requested output representation.
         /// </summary>
-        public ResponseFormat? ResponseFormat { get; set; }
+        public OutputFormat? Output { get; set; }
 
     /// <summary>
         /// Reasoning/thinking controls for models that support them.
@@ -72,6 +63,19 @@ namespace LLMAbstraction.Core.Models
         /// whose continuation items cannot be represented as chat messages.
         /// </summary>
         public ProviderContinuationState? Continuation { get; set; }
+
+        /// <summary>
+        /// Optional retry override and token estimate for admission control on
+        /// this request. This is never serialized to a provider payload.
+        /// </summary>
+        public RequestTransportOptions? Transport { get; set; }
+
+        /// <summary>Request-wide prompt-cache intent and typed provider controls.</summary>
+        public PromptCacheOptions? Cache { get; set; }
+
+        /// <summary>Optional cache breakpoint after the normalized instructions.</summary>
+        public PromptCacheDirective? InstructionsCache { get; set; }
+
     }
 
     /// <summary>
@@ -83,16 +87,6 @@ namespace LLMAbstraction.Core.Models
         /// Maximum tokens to include in the model output.
         /// </summary>
         public int? MaxOutputTokens { get; set; }
-
-        /// <summary>
-        /// Backward-compatible alias for MaxOutputTokens.
-        /// </summary>
-        [System.Obsolete("Use MaxOutputTokens instead.")]
-        public int? MaxTokens
-        {
-            get => MaxOutputTokens;
-            set => MaxOutputTokens = value;
-        }
 
         /// <summary>
         /// Sampling temperature (0.0 to 2.0, provider-dependent)
@@ -140,32 +134,30 @@ namespace LLMAbstraction.Core.Models
     }
 
     /// <summary>
-    /// Response format for structured output
+    /// Output representation requested from the model.
     /// </summary>
-    public class ResponseFormat
+    public sealed class OutputFormat
     {
-        /// <summary>
-        /// Type of response format
-        /// </summary>
-        public ResponseFormatType Type { get; set; }
+        public OutputFormatKind Kind { get; set; }
 
         /// <summary>
-        /// JSON Schema for structured output (when Type is JsonSchema)
+        /// JSON Schema for structured output when <see cref="Kind"/> is
+        /// <see cref="OutputFormatKind.JsonSchema"/>.
         /// </summary>
-        public JsonSchema? JsonSchema { get; set; }
+        public JsonSchemaDefinition? JsonSchema { get; set; }
     }
 
-    public enum ResponseFormatType
+    public enum OutputFormatKind
     {
-        Text,       // Plain text response (default)
-        Json,       // JSON object (not strictly validated)
-        JsonSchema  // Structured output with schema validation
+        Text,
+        JsonObject,
+        JsonSchema
     }
 
     /// <summary>
     /// JSON Schema definition for structured output
     /// </summary>
-    public class JsonSchema
+    public sealed class JsonSchemaDefinition
     {
         /// <summary>
         /// Name of the schema
@@ -182,22 +174,87 @@ namespace LLMAbstraction.Core.Models
         /// </summary>
         public Dictionary<string, object> Schema { get; set; } = new();
 
-        /// <summary>
-        /// Whether to enforce strict schema validation
-        /// </summary>
-        public bool Strict { get; set; } = true;
     }
 
     /// <summary>
-    /// Reasoning/thinking controls that map to provider-specific options.
+    /// Portable reasoning controls with typed provider-specific extensions.
+    /// Effort controls how much work the model performs; it does not select an
+    /// Anthropic thinking mode or a Gemini token budget.
     /// </summary>
-    public class ReasoningOptions
+    public sealed class ReasoningOptions
     {
-        public bool? Enabled { get; set; }
+        public ReasoningEffort? Effort { get; set; }
+        public ReasoningOutput? Output { get; set; }
+        public AnthropicReasoningOptions? Anthropic { get; set; }
+        public OpenAIReasoningOptions? OpenAI { get; set; }
+        public GeminiReasoningOptions? Gemini { get; set; }
+    }
+
+    public enum ReasoningEffort
+    {
+        None,
+        Minimal,
+        Low,
+        Medium,
+        High,
+        XHigh,
+        Max
+    }
+
+    public enum ReasoningOutput
+    {
+        Omitted,
+        Summary
+    }
+
+    public sealed class AnthropicReasoningOptions
+    {
+        public AnthropicThinkingMode Mode { get; set; } = AnthropicThinkingMode.Default;
         public int? BudgetTokens { get; set; }
-        public string? Effort { get; set; }
-        public string? Summary { get; set; }
-        public bool? IncludeThoughts { get; set; }
+    }
+
+    public enum AnthropicThinkingMode
+    {
+        Default,
+        Disabled,
+        Adaptive,
+        Manual
+    }
+
+    public sealed class OpenAIReasoningOptions
+    {
+        public OpenAIReasoningMode? Mode { get; set; }
+        public OpenAIReasoningContext? Context { get; set; }
+        public OpenAIReasoningSummary? Summary { get; set; }
+    }
+
+    public enum OpenAIReasoningMode
+    {
+        Standard,
+        Pro
+    }
+
+    public enum OpenAIReasoningContext
+    {
+        Auto,
+        CurrentTurn,
+        AllTurns
+    }
+
+    public enum OpenAIReasoningSummary
+    {
+        Auto,
+        Concise,
+        Detailed
+    }
+
+    public sealed class GeminiReasoningOptions
+    {
+        /// <summary>
+        /// Legacy generateContent token budget. Interactions uses
+        /// <see cref="ReasoningOptions.Effort"/> as a thinking level instead.
+        /// </summary>
+        public int? ThinkingBudget { get; set; }
     }
 
     /// <summary>

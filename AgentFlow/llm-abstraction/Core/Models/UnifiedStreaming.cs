@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using LLMAbstraction.Core.Transport;
 
 namespace LLMAbstraction.Core.Models
 {
@@ -51,6 +52,12 @@ namespace LLMAbstraction.Core.Models
         /// reconstructing native signed blocks from deltas.
         /// </summary>
         public UnifiedMessage? CompletedMessage { get; set; }
+
+        /// <summary>
+        /// HTTP attempt, request ID, and rate-limit information. Providers attach
+        /// this to the first visible stream chunk.
+        /// </summary>
+        public TransportMetadata? Transport { get; set; }
     }
 
     /// <summary>

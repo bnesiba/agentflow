@@ -57,8 +57,26 @@ namespace LLMAbstraction.Providers.OpenAI.Models
         [JsonPropertyName("metadata")]
         public Dictionary<string, string>? Metadata { get; set; }
 
+        [JsonPropertyName("prompt_cache_key")]
+        public string? PromptCacheKey { get; set; }
+
+        [JsonPropertyName("prompt_cache_options")]
+        public OpenAIPromptCacheConfig? PromptCacheOptions { get; set; }
+
+        [JsonPropertyName("prompt_cache_retention")]
+        public string? PromptCacheRetention { get; set; }
+
         [JsonExtensionData]
         public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
+    }
+
+    public sealed class OpenAIPromptCacheConfig
+    {
+        [JsonPropertyName("mode")]
+        public string? Mode { get; set; }
+
+        [JsonPropertyName("ttl")]
+        public string? Ttl { get; set; }
     }
 
     public class OpenAIResponseTool
@@ -113,6 +131,12 @@ namespace LLMAbstraction.Providers.OpenAI.Models
 
         [JsonPropertyName("summary")]
         public string? Summary { get; set; }
+
+        [JsonPropertyName("mode")]
+        public string? Mode { get; set; }
+
+        [JsonPropertyName("context")]
+        public string? Context { get; set; }
     }
 
     /// <summary>
@@ -205,10 +229,22 @@ namespace LLMAbstraction.Providers.OpenAI.Models
         public OpenAIOutputTokenDetails? OutputTokenDetails { get; set; }
     }
 
+    public sealed class OpenAIInputTokenCountResponse
+    {
+        [JsonPropertyName("object")]
+        public string? Object { get; set; }
+
+        [JsonPropertyName("input_tokens")]
+        public int InputTokens { get; set; }
+    }
+
     public class OpenAIInputTokenDetails
     {
         [JsonPropertyName("cached_tokens")]
         public int? CachedTokens { get; set; }
+
+        [JsonPropertyName("cache_write_tokens")]
+        public int? CacheWriteTokens { get; set; }
     }
 
     public class OpenAIOutputTokenDetails

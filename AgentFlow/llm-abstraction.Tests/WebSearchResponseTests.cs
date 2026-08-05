@@ -28,7 +28,8 @@ public sealed class WebSearchResponseTests
 
         var response = new OpenAIConverter().ConvertResponse(
             JsonSerializer.Deserialize<OpenAIResponse>(json)!);
-        var blocks = Assert.Single(response.Choices).Message.Content;
+        var message = Assert.Single(response.Choices).Message;
+        var blocks = message.Content;
 
         var call = Assert.IsType<ProviderToolCallContent>(blocks[0]);
         Assert.Equal(ProviderToolCapability.WebSearch, call.Capability);
@@ -41,6 +42,9 @@ public sealed class WebSearchResponseTests
         var citation = Assert.Single(Assert.IsType<TextContent>(blocks[2]).Citations);
         Assert.Equal(15, citation.EndIndex);
         Assert.Equal("https://example.com/api", citation.Url);
+        Assert.Equal(result.Sources[0].SourceId, Assert.Single(citation.Sources).SourceId);
+        Assert.Equal(2, citation.AnswerSpan!.ContentBlockIndex);
+        Assert.Equal(2, message.Evidence.Sources.Count);
         Assert.DoesNotContain(blocks, block => block is ToolCallContent);
     }
 
@@ -61,7 +65,8 @@ public sealed class WebSearchResponseTests
 
         var response = new ClaudeConverter().ConvertResponse(
             JsonSerializer.Deserialize<ClaudeMessageResponse>(json)!);
-        var blocks = Assert.Single(response.Choices).Message.Content;
+        var message = Assert.Single(response.Choices).Message;
+        var blocks = message.Content;
 
         Assert.Equal("srvtoolu_1", Assert.IsType<ProviderToolCallContent>(blocks[0]).Id);
         var result = Assert.IsType<ProviderToolResultContent>(blocks[1]);
@@ -73,6 +78,8 @@ public sealed class WebSearchResponseTests
         var citation = Assert.Single(Assert.IsType<TextContent>(blocks[2]).Citations);
         Assert.Equal("https://example.com/api", citation.Url);
         Assert.Equal("API release notes", citation.CitedText);
+        Assert.Equal(source.SourceId, Assert.Single(citation.Sources).SourceId);
+        Assert.Single(message.Evidence.Sources);
         var serverUsage = Assert.IsType<Dictionary<string, int>>(
             response.Usage.ProviderMetadata!["claude.serverToolUse"]);
         Assert.Equal(1, serverUsage["web_search_requests"]);
@@ -95,13 +102,18 @@ public sealed class WebSearchResponseTests
 
         var response = new GeminiInteractionsConverter().ConvertResponse(
             JsonSerializer.Deserialize<GeminiInteractionResponse>(json)!);
-        var blocks = Assert.Single(response.Choices).Message.Content;
+        var message = Assert.Single(response.Choices).Message;
+        var blocks = message.Content;
 
         Assert.Equal("gs_1", Assert.IsType<ProviderToolCallContent>(blocks[0]).Id);
         var result = Assert.IsType<ProviderToolResultContent>(blocks[1]);
         Assert.Equal("<div>Search</div>", result.SearchSuggestionsHtml);
         var citation = Assert.Single(Assert.IsType<TextContent>(blocks[2]).Citations);
         Assert.Equal("https://example.com/api", citation.Url);
+        var artifact = Assert.Single(message.Evidence.AttributionArtifacts);
+        Assert.Equal(AttributionArtifactKind.Html, artifact.Kind);
+        Assert.True(artifact.DisplayRequired);
+        Assert.Equal("<div>Search</div>", artifact.Content);
         Assert.DoesNotContain(blocks, block => block is ToolCallContent);
     }
 
@@ -116,8 +128,8 @@ public sealed class WebSearchResponseTests
             "groundingMetadata":{
               "webSearchQueries":["latest API"],
               "searchEntryPoint":{"renderedContent":"<div>Search</div>"},
-              "groundingChunks":[{"web":{"uri":"https://example.com/api","title":"API docs"}}],
-              "groundingSupports":[{"segment":{"startIndex":0,"endIndex":15,"text":"The API changed."},"groundingChunkIndices":[0]}]
+              "groundingChunks":[{"web":{"uri":"https://example.com/api","title":"API docs"}},{"web":{"uri":"https://example.com/release","title":"Release notes"}}],
+              "groundingSupports":[{"segment":{"startIndex":0,"endIndex":15,"text":"The API changed."},"groundingChunkIndices":[0,1],"confidenceScores":[0.95,0.75]}]
             }
           }]
         }
@@ -128,11 +140,60 @@ public sealed class WebSearchResponseTests
         var blocks = Assert.Single(response.Choices).Message.Content;
 
         var text = Assert.IsType<TextContent>(blocks[0]);
-        Assert.Equal("https://example.com/api", Assert.Single(text.Citations).Url);
+        Assert.Equal(2, text.Citations.Count);
+        Assert.Equal("https://example.com/api", text.Citations[0].Url);
         Assert.IsType<ProviderToolCallContent>(blocks[1]);
         var result = Assert.IsType<ProviderToolResultContent>(blocks[2]);
-        Assert.Equal("https://example.com/api", Assert.Single(result.Sources).Url);
+        Assert.Equal(2, result.Sources.Count);
+        Assert.Equal("https://example.com/api", result.Sources[0].Url);
         Assert.Equal("<div>Search</div>", result.SearchSuggestionsHtml);
+        var evidence = Assert.Single(response.Choices).Message.Evidence;
+        var grounding = Assert.Single(evidence.GroundingSupports);
+        Assert.Equal(2, grounding.Sources.Count);
+        Assert.Equal(new[] { 0.95, 0.75 }, grounding.SourceConfidences);
+        Assert.Equal(0, grounding.AnswerSpan!.StartIndex);
+        Assert.Equal(15, grounding.AnswerSpan.EndIndex);
+        Assert.Equal(2, evidence.Sources.Count);
+        Assert.True(Assert.Single(evidence.AttributionArtifacts).DisplayRequired);
+    }
+
+    [Fact]
+    public void AnthropicCitationLocationsRemainTypedAndUnambiguous()
+    {
+        const string json = """
+        {
+          "id":"msg_citations","type":"message","role":"assistant","model":"claude-sonnet-4-6","stop_reason":"end_turn",
+          "content":[{"type":"text","text":"Cited answer","citations":[
+            {"type":"char_location","document_index":0,"document_title":"Manual","file_id":"file_1","start_char_index":10,"end_char_index":20,"cited_text":"characters"},
+            {"type":"page_location","document_index":0,"document_title":"Manual","file_id":"file_1","start_page_number":2,"end_page_number":4,"cited_text":"pages"},
+            {"type":"content_block_location","document_index":0,"document_title":"Manual","file_id":"file_1","start_block_index":1,"end_block_index":3,"cited_text":"blocks"},
+            {"type":"search_result_location","search_result_index":2,"source":"kb","title":"KB result","start_block_index":0,"end_block_index":1,"cited_text":"result"}
+          ]}],
+          "usage":{"input_tokens":1,"output_tokens":2}
+        }
+        """;
+
+        var message = Assert.Single(new ClaudeConverter().ConvertResponse(
+            JsonSerializer.Deserialize<ClaudeMessageResponse>(json)!).Choices).Message;
+        var citations = Assert.IsType<TextContent>(Assert.Single(message.Content)).Citations;
+
+        var characters = Assert.IsType<CharacterRangeLocation>(citations[0].SourceLocation);
+        Assert.Equal(10, characters.StartIndex);
+        Assert.Equal(20, characters.EndIndex);
+        Assert.True(characters.EndExclusive);
+        var pages = Assert.IsType<PageRangeLocation>(citations[1].SourceLocation);
+        Assert.Equal(2, pages.StartPage);
+        Assert.Equal(4, pages.EndPage);
+        Assert.Null(pages.EndInclusive);
+        var blocks = Assert.IsType<ContentBlockRangeLocation>(citations[2].SourceLocation);
+        Assert.Equal(1, blocks.StartBlockIndex);
+        Assert.Equal(3, blocks.EndBlockIndex);
+        Assert.True(blocks.EndExclusive);
+        Assert.Equal(0, citations[0].ProviderMetadata!["claude.documentIndex"]);
+        Assert.Equal(2, citations[3].ProviderMetadata!["claude.searchResultIndex"]);
+        Assert.Equal("kb", citations[3].ProviderMetadata!["claude.source"]);
+        Assert.All(citations, citation => Assert.Single(citation.Sources));
+        Assert.Equal(2, message.Evidence.Sources.Count);
     }
 
     [Fact]

@@ -17,6 +17,7 @@ namespace LLMAbstraction.Core.Models
         /// a stable capability identifier by <see cref="ProviderTools"/>.
         /// </summary>
         public string Id { get; set; } = string.Empty;
+        public PromptCacheDirective? Cache { get; set; }
     }
 
     /// <summary>

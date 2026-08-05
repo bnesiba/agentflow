@@ -2,6 +2,7 @@ using System.Net;
 using LLMAbstraction.Core;
 using LLMAbstraction.Core.Errors;
 using LLMAbstraction.Core.Models;
+using LLMAbstraction.Core.Transport;
 using LLMAbstraction.Providers.Claude;
 using LLMAbstraction.Providers.Gemini;
 using LLMAbstraction.Providers.OpenAI;
@@ -22,7 +23,7 @@ public sealed class ErrorHandlingTests
             ["x-request-id"] = "req_openai",
             ["retry-after"] = "5"
         });
-        var service = new OpenAIService(client, "key");
+        var service = new OpenAIService(client, "key", transportOptions: NoRetries());
 
         var error = await Assert.ThrowsAsync<LLMApiException>(
             () => service.GenerateAsync(Request("gpt-5.6")));
@@ -83,7 +84,7 @@ public sealed class ErrorHandlingTests
     public async Task NonJsonProxyErrorIsStillStructuredAndPreservesRawBody()
     {
         using var client = Client("upstream unavailable", HttpStatusCode.BadGateway);
-        var service = new OpenAIService(client, "key");
+        var service = new OpenAIService(client, "key", transportOptions: NoRetries());
 
         var error = await Assert.ThrowsAsync<LLMApiException>(
             () => service.GenerateAsync(Request("gpt-5.6")));
@@ -97,6 +98,11 @@ public sealed class ErrorHandlingTests
     {
         Model = model,
         Messages = { new UnifiedMessage(MessageRole.User, "Hello") }
+    };
+
+    private static LLMTransportOptions NoRetries() => new()
+    {
+        Retry = new RetryPolicy { Enabled = false }
     };
 
     private static HttpClient Client(

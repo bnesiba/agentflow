@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
+using LLMAbstraction.Core.Transport;
 
 namespace LLMAbstraction.Core.Models
 {
@@ -43,6 +44,11 @@ namespace LLMAbstraction.Core.Models
         /// continue this response without losing native output items.
         /// </summary>
         public ProviderContinuationState? Continuation { get; set; }
+
+        /// <summary>
+        /// HTTP attempt, request ID, and rate-limit information for this call.
+        /// </summary>
+        public TransportMetadata? Transport { get; set; }
     }
 
     /// <summary>
@@ -110,6 +116,9 @@ namespace LLMAbstraction.Core.Models
         public int? ReasoningTokens { get; set; }
         public int? CacheCreationTokens { get; set; }
         public int? CacheReadTokens { get; set; }
+        public int? CacheWriteTokens { get; set; }
+        public int? CacheWrite5MinuteTokens { get; set; }
+        public int? CacheWrite1HourTokens { get; set; }
         public Dictionary<string, object>? ProviderMetadata { get; set; }
     }
 }
