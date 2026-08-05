@@ -65,7 +65,13 @@ namespace LLMAbstraction.Core.Models
     /// <summary>
     /// Provider-specific options (escape hatch)
     /// </summary>
-    public ProviderOptions? ProviderOptions { get; set; }
+        public ProviderOptions? ProviderOptions { get; set; }
+
+        /// <summary>
+        /// Provider-bound state from an earlier response. This is used for APIs
+        /// whose continuation items cannot be represented as chat messages.
+        /// </summary>
+        public ProviderContinuationState? Continuation { get; set; }
     }
 
     /// <summary>
@@ -109,7 +115,8 @@ namespace LLMAbstraction.Core.Models
         public List<string>? StopSequences { get; set; }
 
         /// <summary>
-        /// Enable streaming (for future implementation)
+        /// Request provider streaming. StreamAsync enables this automatically;
+        /// callers normally leave it false when using GenerateAsync.
         /// </summary>
         public bool Stream { get; set; } = false;
     }

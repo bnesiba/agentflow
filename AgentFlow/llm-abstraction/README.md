@@ -1,530 +1,407 @@
 # LLM Abstraction Layer for C#
 
-A unified C# abstraction layer for interacting with multiple Large Language Model (LLM) APIs including OpenAI, Google Gemini, and Anthropic Claude. This library provides a consistent interface across providers, making it easy to switch between different LLM services or support multiple providers in your application.
+A .NET 8 abstraction over these HTTP APIs:
 
-## Features
+- Anthropic Claude Messages API (`POST /v1/messages`)
+- OpenAI Responses API (`POST /v1/responses`)
+- Google Gemini `generateContent` and `streamGenerateContent`
 
-- **Unified Interface**: Single API for OpenAI, Gemini, and Claude
-- **Type-Safe Models**: Strongly-typed request and response models
-- **Provider Converters**: Automatic conversion between unified and provider-specific formats
-- **Structured Output**: JSON mode and JSON Schema support across all providers
-- **Streaming**: Real-time streaming responses with unified chunk format
-- **Tool/Function Calling**: Consistent tool calling interface across all providers
-- **Multimodal Support**: Text and image inputs with unified content blocks
-- **Async/Await**: Modern async/await patterns throughout
-- **Extensible**: Easy to add new providers or extend existing functionality
+The portable subset covers text, images/files, custom function tools, structured output, reasoning controls, and streaming. Provider-native state is retained where it is required for correct multi-turn continuation.
 
-## Installation
+## Compatibility status
 
-```bash
-# Add the project to your solution
-dotnet add reference path/to/LLMAbstraction.csproj
-```
+| Capability | Claude | OpenAI | Gemini |
+|---|---|---|---|
+| Text generation | Supported | Supported | Supported |
+| Text streaming | Supported | Supported | Supported |
+| Custom function calls | Supported | Supported | Supported |
+| Streaming function calls | Supported | Supported | Supported |
+| Parallel function calls | Preserved | Configurable | Preserved |
+| Images | URL/base64 | URL/base64/file ID | Base64/Files API URI |
+| Documents/files | URL/base64/file ID | URL/base64/file ID | Base64/Files API URI |
+| JSON mode | Supported | Supported | Supported |
+| JSON Schema output | Provider schema subset | Provider schema subset | Provider schema subset |
+| Reasoning controls | Manual/adaptive subset | Effort/summary subset | Budget/level subset |
+| Native reasoning continuation | Preserved | Preserved | Preserved |
+| Built-in provider tools | Not modeled | Not modeled | Not modeled |
+| Provider-native citations/grounding | Retained natively/metadata | Retained natively/metadata | Retained in metadata |
 
-## Quick Start
+Model capabilities and accepted schema keywords remain model-dependent. The provider API is the final authority for model-specific validation.
 
-### Basic Text Generation
+Google now recommends its Interactions API for the newest agentic features. This library currently uses the still-supported, legacy `generateContent` API.
+
+## Basic usage
 
 ```csharp
 using LLMAbstraction.Core;
 using LLMAbstraction.Core.Models;
 
-// Create a service (OpenAI, Claude, or Gemini)
 var service = LLMServiceFactory.CreateOpenAI("your-api-key");
 
-// Create a request
 var request = new UnifiedRequest
 {
-    Model = "gpt-5-mini",
-    Messages = new List<UnifiedMessage>
+    Model = "gpt-5.6",
+    Instructions = "Answer clearly and concisely.",
+    Messages =
     {
         new UnifiedMessage(MessageRole.User, "What is the capital of France?")
     },
     Parameters = new GenerationParameters
     {
-        MaxOutputTokens = 100,
-        Temperature = 0.7
+        MaxOutputTokens = 200,
+        Temperature = 0.4
     }
 };
 
-// Generate response
 var response = await service.GenerateAsync(request);
-var text = (response.Choices[0].Message.Content[0] as TextContent)?.Text;
-Console.WriteLine(text);
+var text = response.Choices[0].Message.Content
+    .OfType<TextContent>()
+    .Select(content => content.Text);
+
+Console.WriteLine(string.Concat(text));
 ```
 
-### Using Different Providers
+Model IDs change over time and may not be enabled for every account. Verify the selected ID in the provider's current model documentation.
 
-The same code works with any provider - just change the service creation:
+## Providers
 
 ```csharp
-// OpenAI
 var openAI = LLMServiceFactory.CreateOpenAI("openai-key");
-request.Model = "gpt-5-mini";
 
-// Claude
-var claude = LLMServiceFactory.CreateClaude("claude-key");
-request.Model = "claude-sonnet-4-20250514";
+var claude = LLMServiceFactory.CreateClaude(
+    apiKey: "anthropic-key",
+    apiVersion: "2023-06-01");
 
-// Gemini
 var gemini = LLMServiceFactory.CreateGemini("gemini-key");
-request.Model = "gemini-3-pro";
-
-// All use the same GenerateAsync method
-var response = await service.GenerateAsync(request);
 ```
 
-## Core Concepts
+Custom base URLs are supported by each factory method. Gemini authentication uses the `x-goog-api-key` header; the key is not placed in the URL.
 
-### Unified Message Structure
+## Instructions and messages
 
-Messages use a role-based structure with flexible content blocks:
+Use `UnifiedRequest.Instructions` for developer/system-level instructions. Text from any `MessageRole.System` messages is appended to `Instructions` in request order, separated by blank lines, and removed from conversational history before provider conversion.
 
-```csharp
-var message = new UnifiedMessage
-{
-    Role = MessageRole.User,
-    Content = new List<ContentBlock>
-    {
-        new TextContent { Text = "Hello!" },
-        new ImageContent 
-        { 
-            Source = new ImageSource { Url = "https://..." }
-        }
-    }
-};
-```
+Non-text system content cannot be represented portably and is rejected rather than silently discarded.
 
-**Supported Roles:**
-- `System`: System instructions (handled appropriately per provider)
-- `User`: User messages
-- `Assistant`: Assistant/model responses
-- `Tool`: Tool execution results
+Portable roles are:
 
-**Content Block Types:**
-- `TextContent`: Plain text
-- `ImageContent`: Images (URL or base64)
-- `ToolCallContent`: Tool/function calls from the model
-- `ToolResultContent`: Results from tool execution
+- `System`
+- `User`
+- `Assistant`
+- `Tool`
 
-### Generation Parameters
+Portable content includes:
 
-Common parameters across all providers:
+- `TextContent`
+- `RefusalContent`
+- `ImageContent`
+- `MediaContent`
+- `ToolCallContent`
+- `ToolResultContent`
+- `ProviderNativeContent`
+
+`ProviderNativeContent` and `NativeRepresentation` carry opaque signed or future provider blocks. Native content is provider-bound and cannot be sent to a different provider.
+
+## Custom tools
 
 ```csharp
-var parameters = new GenerationParameters
-{
-    MaxOutputTokens = 1000,           // Maximum tokens to generate
-    Temperature = 0.7,          // Sampling temperature (0.0-2.0)
-    TopP = 0.9,                 // Nucleus sampling
-    TopK = 40,                  // Top-k sampling (Gemini/Claude)
-    StopSequences = new List<string> { "\n\n" },
-    Stream = false              // For future streaming support
-};
-```
-
-### Tool/Function Calling
-
-Define tools with JSON Schema:
-
-```csharp
-var tool = new ToolDefinition
+var weather = new ToolDefinition
 {
     Name = "get_weather",
-    Description = "Get current weather for a location",
+    Description = "Get the current weather for a city.",
+    Strict = true,
     Parameters = new Dictionary<string, object>
     {
         ["type"] = "object",
         ["properties"] = new Dictionary<string, object>
         {
-            ["location"] = new Dictionary<string, object>
+            ["city"] = new Dictionary<string, object>
             {
-                ["type"] = "string",
-                ["description"] = "City and state, e.g. Boston, MA"
+                ["type"] = "string"
             }
         },
-        ["required"] = new[] { "location" }
+        ["required"] = new[] { "city" },
+        ["additionalProperties"] = false
     }
 };
 
-var request = new UnifiedRequest
-{
-    Model = "gpt-5-mini",
-    Messages = messages,
-    Tools = new List<ToolDefinition> { tool },
-    ToolChoice = new ToolChoice { Type = ToolChoiceType.Auto }
-};
+request.Tools = new List<ToolDefinition> { weather };
+request.ToolChoice = new ToolChoice { Type = ToolChoiceType.Auto };
 ```
 
-**Tool Choice Types:**
-- `Auto`: Model decides whether to use tools
-- `None`: Don't use tools
-- `Required`: Must use at least one tool
-- `Specific`: Use a specific tool (set `ToolName`)
+Tool choice types are `Auto`, `None`, `Required`, and `Specific`. `Specific` requires a valid `ToolName`.
 
-## Provider-Specific Details
+Claude thinking cannot be combined with forced (`Required` or `Specific`) tool choice. Validation rejects this combination before the HTTP call.
 
-### OpenAI
+### Returning tool results
 
 ```csharp
-var service = LLMServiceFactory.CreateOpenAI(
-    apiKey: "sk-...",
-    baseUrl: "https://api.openai.com/v1"  // Optional
-);
-```
+var call = response.Choices[0].Message.Content
+    .OfType<ToolCallContent>()
+    .First();
 
-**Supported Models:** `gpt-5-mini`, `gpt-5.1`, `gpt-5.2`, etc.
-
-**Notes:**
-- Supports 6 message roles (system, user, assistant, tool, function, developer)
-- System messages are included in the messages array
-- Tool calls use dedicated message types
-
-### Claude (Anthropic)
-
-```csharp
-var service = LLMServiceFactory.CreateClaude(
-    apiKey: "sk-ant-...",
-    apiVersion: "2023-06-01",              // Optional
-    baseUrl: "https://api.anthropic.com"   // Optional
-);
-```
-
-**Supported Models:** `claude-opus-4-20250514`, `claude-sonnet-4-20250514`, `claude-haiku-3-5-20241022`
-
-**Notes:**
-- Uses only 2 roles (user, assistant)
-- System instructions are a separate parameter
-- `max_tokens` is required (defaults to 1024)
-- Supports context caching with cache metrics in response
-
-### Gemini (Google)
-
-```csharp
-var service = LLMServiceFactory.CreateGemini(
-    apiKey: "AIza...",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta"  // Optional
-);
-```
-
-**Supported Models:** `gemini-3-pro`, `gemini-2.5-flash`, `gemini-1.5-pro`
-
-**Notes:**
-- Uses only 2 roles (user, model)
-- Model name is included in the URL path
-- System instructions are a separate parameter
-- Part-based content structure (handled by converter)
-- Includes safety ratings in responses
-
-## Architecture
-
-### Project Structure
-
-```
-LLMAbstraction/
-|-- Core/
-|   |-- Models/
-|   |   |-- UnifiedMessage.cs       # Message and content block models
-|   |   |-- UnifiedRequest.cs       # Request model
-|   |   `-- UnifiedResponse.cs      # Response model
-|   |-- Interfaces/
-|   |   `-- ILLMService.cs          # Core service interface
-|   `-- LLMServiceFactory.cs        # Factory for creating services
-|-- Providers/
-|   |-- OpenAI/
-|   |   |-- Models/
-|   |   |   `-- OpenAIModels.cs     # OpenAI-specific models
-|   |   |-- OpenAIConverter.cs      # Conversion logic
-|   |   `-- OpenAIService.cs        # Service implementation
-|   |-- Claude/
-|   |   |-- Models/
-|   |   |   `-- ClaudeModels.cs
-|   |   |-- ClaudeConverter.cs
-|   |   `-- ClaudeService.cs
-|   `-- Gemini/
-|       |-- Models/
-|       |   `-- GeminiModels.cs
-|       |-- GeminiConverter.cs
-|       `-- GeminiService.cs
-`-- Examples/
-    `-- BasicUsage.cs               # Usage examples
-```
-
-### Design Patterns
-
-**Converter Pattern**: Each provider has a converter that implements `IModelConverter<TRequest, TResponse>` to translate between unified and provider-specific formats.
-
-**Factory Pattern**: `LLMServiceFactory` provides a centralized way to create service instances.
-
-**Strategy Pattern**: Different providers implement the same `ILLMService` interface, allowing runtime provider selection.
-
-## Advanced Usage
-
-### Multi-Turn Conversations
-
-```csharp
-var request = new UnifiedRequest
-{
-    Model = "claude-sonnet-4-20250514",
-    Instructions = "You are a helpful coding assistant.",
-    Messages = new List<UnifiedMessage>
+var resultMessage = new UnifiedMessage(
+    MessageRole.Tool,
+    new List<ContentBlock>
     {
-        new UnifiedMessage(MessageRole.User, "How do I reverse a string in C#?"),
-        new UnifiedMessage(MessageRole.Assistant, "You can use Array.Reverse()..."),
-        new UnifiedMessage(MessageRole.User, "Can you show me an example?")
-    },
-    Parameters = new GenerationParameters { MaxOutputTokens = 500 }
-};
-```
-
-### Handling Tool Calls
-
-```csharp
-var response = await service.GenerateAsync(request);
-
-if (response.Choices[0].FinishReason == FinishReason.ToolCalls)
-{
-    foreach (var content in response.Choices[0].Message.Content)
-    {
-        if (content is ToolCallContent toolCall)
+        new ToolResultContent
         {
-            // Execute the tool
-            var result = ExecuteTool(toolCall.Name, toolCall.Input);
-            
-            // Add tool result to conversation
-            request.Messages.Add(response.Choices[0].Message);
-            request.Messages.Add(new UnifiedMessage(
-                MessageRole.Tool,
-                new List<ContentBlock>
-                {
-                    new ToolResultContent
-                    {
-                        ToolCallId = toolCall.Id,
-                        Output = result
-                    }
-                }
-            ));
-            
-            // Continue conversation
-            var finalResponse = await service.GenerateAsync(request);
+            ToolCallId = call.Id,
+            ToolName = call.Name,
+            Output = new { temperature = 72 }
         }
-    }
-}
+    });
 ```
 
-### Provider-Specific Options
+For Gemini, the converter can resolve an omitted `ToolName` from a matching prior `ToolCallId`. An orphaned Gemini result must supply `ToolName`. A mismatched explicit name is rejected.
 
-Use the `ProviderOptions` escape hatch for provider-specific features:
+## Provider-native continuation
+
+Modern provider responses contain state that cannot safely be flattened into text and function calls:
+
+- Claude signed `thinking` and `redacted_thinking` blocks
+- OpenAI reasoning and other Responses output items
+- Gemini ordered parts and `thoughtSignature` values
+
+The abstraction preserves this state without translating it between providers.
+
+### Claude and Gemini
+
+Append the returned assistant message, including its native representations, followed by the tool result:
 
 ```csharp
-var request = new UnifiedRequest
-{
-    Model = "gpt-5-mini",
-    Messages = messages,
-    Parameters = parameters,
-    ProviderOptions = new ProviderOptions
-    {
-        OpenAI = new Dictionary<string, object>
-        {
-            ["presence_penalty"] = 0.5,
-            ["frequency_penalty"] = 0.3
-        }
-    }
-};
+nextRequest.Messages.Add(response.Choices[0].Message);
+nextRequest.Messages.Add(resultMessage);
 ```
 
-## Structured Output
+Do not rebuild or reorder signed provider blocks.
 
-All providers support structured output with JSON mode and JSON Schema:
+### OpenAI stateless replay
 
-### JSON Mode
+OpenAI native output items are stored in `UnifiedResponse.Continuation`. For stateless replay, attach that state and send only new input—the retained output items already contain the previous assistant response:
 
 ```csharp
-var request = new UnifiedRequest
+var nextRequest = new UnifiedRequest
 {
-    Model = "gpt-5-mini",
-    Messages = new List<UnifiedMessage>
-    {
-        new UnifiedMessage(MessageRole.User, "List 3 colors with hex codes")
-    },
-    ResponseFormat = new ResponseFormat
-    {
-        Type = ResponseFormatType.Json
-    }
+    Model = request.Model,
+    Continuation = response.Continuation,
+    Messages = { resultMessage }
 };
-
-var response = await service.GenerateAsync(request);
-// Response will be valid JSON
 ```
 
-### JSON Schema
+Do not also append the projected OpenAI assistant message; that would duplicate the retained output items.
 
-Define a strict schema for the response:
+### OpenAI server-managed continuation
 
 ```csharp
-var personSchema = new Dictionary<string, object>
-{
-    ["type"] = "object",
-    ["properties"] = new Dictionary<string, object>
-    {
-        ["name"] = new Dictionary<string, object> { ["type"] = "string" },
-        ["age"] = new Dictionary<string, object> { ["type"] = "number" },
-        ["email"] = new Dictionary<string, object> { ["type"] = "string" }
-    },
-    ["required"] = new[] { "name", "age", "email" }
-};
+response.Continuation!.Mode = ContinuationMode.ServerManaged;
 
-var request = new UnifiedRequest
+var nextRequest = new UnifiedRequest
 {
-    Model = "gpt-5-mini",
-    Messages = new List<UnifiedMessage>
-    {
-        new UnifiedMessage(MessageRole.User, "Generate a person profile")
-    },
-    ResponseFormat = new ResponseFormat
-    {
-        Type = ResponseFormatType.JsonSchema,
-        JsonSchema = new JsonSchema
-        {
-            Name = "person",
-            Schema = personSchema,
-            Strict = true  // Enforce strict validation
-        }
-    }
+    Model = request.Model,
+    Continuation = response.Continuation,
+    Messages = { resultMessage }
 };
 ```
 
-**Provider Notes:**
-- **OpenAI**: Native `response_format` support
-- **Claude**: Native `output_config.format` support (available since late 2024)
-- **Gemini**: Uses `responseMimeType` and `responseJsonSchema` in generation config
+This emits `previous_response_id` and does not replay the native items.
 
 ## Streaming
 
-All providers support real-time streaming responses:
+```csharp
+await foreach (var chunk in service.StreamAsync(request))
+{
+    if (chunk.Delta.Content != null)
+        Console.Write(chunk.Delta.Content);
 
-### Basic Streaming
+    foreach (var call in chunk.Delta.ToolCalls ?? Enumerable.Empty<ToolCallDelta>())
+    {
+        if (call.Arguments != null)
+        {
+            // Incremental JSON fragment. Append by call.Index/call.Id.
+        }
+
+        if (call.IsComplete)
+        {
+            // call.CompleteArguments is the completed JSON argument object.
+            // call.Id is the provider continuation/call ID.
+            // call.ItemId is a separate provider response-item ID when applicable.
+        }
+    }
+
+    if (chunk.CompletedMessage != null)
+    {
+        // Fully accumulated assistant message, including native signed content.
+    }
+}
+```
+
+Streaming fields:
+
+- `Delta.Content`: display-oriented text fragment
+- `Delta.ToolCalls`: tool lifecycle deltas
+- `Delta.ContentBlocks`: complete native blocks observed in the event
+- `CompletedMessage`: accumulated assistant message at a terminal event
+- `Continuation`: response-level native continuation state when provided
+- `Usage`: provider usage when available
+- `FinishReason`: normalized terminal reason
+
+## Structured output
 
 ```csharp
-var request = new UnifiedRequest
+request.ResponseFormat = new ResponseFormat
 {
-    Model = "gpt-5-mini",
-    Messages = new List<UnifiedMessage>
+    Type = ResponseFormatType.JsonSchema,
+    JsonSchema = new JsonSchema
     {
-        new UnifiedMessage(MessageRole.User, "Write a poem about coding")
+        Name = "person",
+        Strict = true,
+        Schema = new Dictionary<string, object>
+        {
+            ["type"] = "object",
+            ["properties"] = new Dictionary<string, object>
+            {
+                ["name"] = new Dictionary<string, object> { ["type"] = "string" },
+                ["age"] = new Dictionary<string, object> { ["type"] = "integer" }
+            },
+            ["required"] = new[] { "name", "age" },
+            ["additionalProperties"] = false
+        }
     }
 };
-
-await foreach (var chunk in service.StreamAsync(request))
-{
-    if (!string.IsNullOrEmpty(chunk.Delta.Content))
-    {
-        Console.Write(chunk.Delta.Content);
-    }
-
-    if (chunk.FinishReason.HasValue)
-    {
-        Console.WriteLine($"\nFinished: {chunk.FinishReason}");
-        if (chunk.Usage != null)
-        {
-            Console.WriteLine($"Tokens: {chunk.Usage.TotalTokens}");
-        }
-    }
-}
 ```
 
-### Streaming with Aggregation
+`ResponseFormatType.Json` requests JSON without a caller-supplied strict schema. `JsonSchema` requires a non-empty schema. Providers support different JSON Schema subsets and may reject overly complex or unsupported keywords.
+
+## Reasoning controls
 
 ```csharp
-var fullResponse = new StringBuilder();
-
-await foreach (var chunk in service.StreamAsync(request))
+request.Reasoning = new ReasoningOptions
 {
-    if (!string.IsNullOrEmpty(chunk.Delta.Content))
-    {
-        fullResponse.Append(chunk.Delta.Content);
-    }
-}
-
-Console.WriteLine(fullResponse.ToString());
+    Enabled = true,
+    Effort = "medium",
+    Summary = "auto",
+    IncludeThoughts = true,
+    BudgetTokens = null
+};
 ```
 
-### Streaming Tool Calls
+These properties are provider-dependent:
+
+- Claude: manual `BudgetTokens`, adaptive effort subset
+- OpenAI: `Effort` and `Summary`
+- Gemini: `BudgetTokens` or `Effort`/thinking level, plus `IncludeThoughts`
+
+Gemini budget and level controls cannot be supplied together through the portable request. Claude manual budgets must satisfy provider constraints.
+
+## Provider options
+
+Provider-specific root fields can be added without changing the portable model:
 
 ```csharp
-var toolCallArgs = new StringBuilder();
-
-await foreach (var chunk in service.StreamAsync(request))
+request.ProviderOptions = new ProviderOptions
 {
-    if (chunk.Delta.ToolCalls != null)
+    OpenAI = new Dictionary<string, object>
     {
-        foreach (var toolCall in chunk.Delta.ToolCalls)
-        {
-            if (!string.IsNullOrEmpty(toolCall.Arguments))
-            {
-                toolCallArgs.Append(toolCall.Arguments);
-            }
-        }
+        ["store"] = false,
+        ["service_tier"] = "flex",
+        ["include"] = new[] { "reasoning.encrypted_content" }
     }
-}
+};
 ```
 
-**Stream Chunk Properties:**
-- `Id`: Unique identifier for the stream
-- `Model`: Model that generated the chunk
-- `ChoiceIndex`: Index for multiple choices (n > 1)
-- `Delta`: Incremental content (text, tool calls)
-- `FinishReason`: Reason for completion (only in final chunk)
-- `Usage`: Token usage (only in final chunk for some providers)
+Equivalent dictionaries exist for Claude and Gemini. Values are serialized as root request fields with their exact supplied names.
 
-## Future Enhancements
+Unified fields such as `model`, `input`, `messages`, `generationConfig`, and `tools` cannot be overridden through provider options. Collisions throw an exception. Claude `anthropicBeta` is handled as an HTTP header, and Gemini `safetySettings` is handled by its typed request property.
 
-- Response caching
-- Retry logic with exponential backoff
-- Rate limiting and throttling
-- Token counting utilities
-- Batch processing support
-- Conversation history management
+Provider options bypass most semantic capability checks. Confirm native fields against current provider documentation.
 
-## Error Handling
+## Request validation
 
-All services throw `HttpRequestException` for API errors:
+Converters validate requests before serialization. Validation includes:
+
+- Required model and conversation input
+- Sampling ranges
+- Token ranges
+- Tool names, duplicate tools, and tool choice
+- Tool-result call IDs
+- Structured-output schema presence
+- Provider-specific reasoning/tool conflicts
+- Provider continuation mismatches
+
+Inspect diagnostics without sending a request:
 
 ```csharp
+using LLMAbstraction.Core.Validation;
+
+var diagnostics = LLMRequestValidator.Validate(request, LLMProvider.OpenAI);
+var capabilities = LLMRequestValidator.GetCapabilities(LLMProvider.OpenAI);
+```
+
+Converters throw `LLMRequestValidationException` when error diagnostics exist. Warnings remain available through explicit validation.
+
+Capability profiles describe the portable provider-level contract. They do not claim that every model supports every provider feature.
+
+## Errors
+
+Provider HTTP failures throw `LLMApiException`, which derives from `HttpRequestException` for compatibility.
+
+```csharp
+using LLMAbstraction.Core.Errors;
+
 try
 {
-    var response = await service.GenerateAsync(request);
+    await service.GenerateAsync(request);
 }
-catch (HttpRequestException ex)
+catch (LLMApiException exception)
 {
-    Console.WriteLine($"API Error: {ex.Message}");
-}
-catch (InvalidOperationException ex)
-{
-    Console.WriteLine($"Deserialization Error: {ex.Message}");
+    Console.WriteLine(exception.Provider);
+    Console.WriteLine(exception.StatusCode);
+    Console.WriteLine(exception.ErrorCode);
+    Console.WriteLine(exception.ErrorType);
+    Console.WriteLine(exception.Parameter);
+    Console.WriteLine(exception.RequestId);
+    Console.WriteLine(exception.RetryAfter);
+    Console.WriteLine(exception.IsTransient);
 }
 ```
 
-## Dependencies
+The raw response and parsed provider detail JSON remain available for diagnostics.
 
-- .NET 8.0 or higher
+## Known portability limits
 
-## Contributing
+- Provider built-in tools are not represented by `ToolDefinition`; extend the native DTOs before using them. The protected `tools` request field cannot be replaced through provider options.
+- Prompt-cache breakpoints and all cache-control strategies are not portable. Claude cache usage metrics are preserved.
+- Provider citations, grounding, refusals, and safety fields do not share one universal schema. Common information is exposed where possible and native metadata is retained.
+- Gemini's newer Interactions API is not yet implemented.
+- Schema support and reasoning controls vary by model.
+- Provider-native continuation state cannot be moved between providers.
+- This layer does not implement retries, rate limiting, batch requests, token counting, embeddings, realtime audio, or media generation.
 
-Contributions are welcome! Areas for contribution:
-- Additional provider implementations
-- Streaming support
-- Enhanced error handling
-- Unit tests
-- Performance optimizations
+Unsupported input is rejected rather than silently omitted.
 
-## License
+## Testing
 
-MIT License - see LICENSE file for details
+The `LLMAbstraction.Tests` project contains deterministic contract tests for:
 
-## Acknowledgments
+- Provider request JSON
+- Endpoints and authentication headers
+- System instruction normalization
+- Images and files
+- Structured output and reasoning
+- Tool calls and tool results
+- Streaming SSE lifecycles
+- Provider-native continuation round trips
+- Cross-provider isolation
+- Validation diagnostics
+- Provider option collision handling
+- Structured API errors
+- Refusal, safety, finish, cache, and usage metadata
 
-This abstraction layer is based on analysis of the official API documentation from:
-- OpenAI (https://platform.openai.com/docs)
-- Anthropic Claude (https://docs.anthropic.com)
-- Google Gemini (https://ai.google.dev/docs)
+Run the suite with:
+
+```bash
+dotnet test AgentFlow/AgentFlow.sln
+```
+
+No live API credentials are required for the contract suite.

@@ -37,6 +37,12 @@ namespace LLMAbstraction.Core.Models
         /// Provider-native metadata that should be preserved across turns when needed.
         /// </summary>
         public Dictionary<string, object>? ProviderMetadata { get; set; }
+
+        /// <summary>
+        /// Provider-bound state that may be attached to a later request to
+        /// continue this response without losing native output items.
+        /// </summary>
+        public ProviderContinuationState? Continuation { get; set; }
     }
 
     /// <summary>

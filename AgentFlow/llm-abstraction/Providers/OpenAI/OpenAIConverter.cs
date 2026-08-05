@@ -2,8 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using LLMAbstraction.Core.Interfaces;
 using LLMAbstraction.Core.Models;
+using LLMAbstraction.Core.Validation;
+using LLMAbstraction.Core;
 using LLMAbstraction.Providers.OpenAI.Models;
 
 namespace LLMAbstraction.Providers.OpenAI
@@ -13,22 +16,41 @@ namespace LLMAbstraction.Providers.OpenAI
     /// </summary>
     public class OpenAIConverter : IModelConverter<OpenAIResponseRequest, OpenAIResponse>
     {
+        private static readonly HashSet<string> ProtectedRequestFields = new(StringComparer.Ordinal)
+        {
+            "model", "input", "previous_response_id", "instructions", "max_output_tokens",
+            "temperature", "top_p", "stream", "tools", "tool_choice", "parallel_tool_calls",
+            "text", "reasoning", "user", "metadata"
+        };
+        private static readonly JsonSerializerOptions NativeJsonOptions = new()
+        {
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        };
+
         public OpenAIResponseRequest ConvertRequest(UnifiedRequest request)
         {
-            var supportsSamplingParameters = SupportsSamplingParameters(request);
-
+            LLMRequestValidator.ValidateAndThrow(request, LLMProvider.OpenAI);
             var openAIRequest = new OpenAIResponseRequest
             {
                 Model = request.Model,
-                Input = ConvertMessages(request.Messages),
-                Instructions = request.Instructions,
+                Input = ConvertInput(request),
+                Instructions = UnifiedRequestNormalization.CombineInstructions(request),
                 MaxOutputTokens = request.Parameters.MaxOutputTokens,
-                Temperature = supportsSamplingParameters ? request.Parameters.Temperature : null,
-                TopP = supportsSamplingParameters ? request.Parameters.TopP : null,
+                Temperature = request.Parameters.Temperature,
+                TopP = request.Parameters.TopP,
                 Stream = request.Parameters.Stream,
                 User = request.Metadata?.UserId,
-                Metadata = request.Metadata?.Tags
+                Metadata = request.Metadata?.Tags,
+                AdditionalProperties = ProviderOptionMerger.ConvertAdditionalFields(
+                    request.ProviderOptions?.OpenAI,
+                    ProtectedRequestFields)
             };
+
+            if (request.Continuation?.Provider == ProviderIds.OpenAI &&
+                request.Continuation.Mode == ContinuationMode.ServerManaged)
+            {
+                openAIRequest.PreviousResponseId = request.Continuation.ResponseId;
+            }
 
             if (request.Tools != null && request.Tools.Any())
             {
@@ -55,22 +77,6 @@ namespace LLMAbstraction.Providers.OpenAI
             }
 
             return openAIRequest;
-        }
-
-        private static bool SupportsSamplingParameters(UnifiedRequest request)
-        {
-            var model = request.Model;
-
-            if (!model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            if (model.Equals("gpt-5", StringComparison.OrdinalIgnoreCase) ||
-                model.StartsWith("gpt-5-", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            return string.Equals(request.Reasoning?.Effort, "none", StringComparison.OrdinalIgnoreCase);
         }
 
         public UnifiedResponse ConvertResponse(OpenAIResponse response)
@@ -125,9 +131,40 @@ namespace LLMAbstraction.Providers.OpenAI
                 } : new UsageInfo(),
                 ProviderMetadata = new Dictionary<string, object>
                 {
-                    { "status", response.Status ?? string.Empty }
-                }
+                    { "status", response.Status ?? string.Empty },
+                    { "incompleteReason", response.IncompleteDetails?.Reason ?? string.Empty },
+                    { "errorCode", response.Error?.Code ?? string.Empty },
+                    { "errorMessage", response.Error?.Message ?? string.Empty }
+                },
+                Continuation = CreateContinuationState(response)
             };
+        }
+
+        internal static ProviderContinuationState CreateContinuationState(OpenAIResponse response)
+        {
+            return new ProviderContinuationState
+            {
+                Provider = ProviderIds.OpenAI,
+                ResponseId = response.Id,
+                NativeItems = response.Output
+                    .Select(item => JsonSerializer.SerializeToElement(item, NativeJsonOptions))
+                    .Select(item => item.Clone())
+                    .ToList()
+            };
+        }
+
+        private List<object> ConvertInput(UnifiedRequest request)
+        {
+            var result = new List<object>();
+
+            if (request.Continuation?.Provider == ProviderIds.OpenAI &&
+                request.Continuation.Mode == ContinuationMode.StatelessReplay)
+            {
+                result.AddRange(request.Continuation.NativeItems.Select(item => (object)item.Clone()));
+            }
+
+            result.AddRange(ConvertMessages(request.Messages));
+            return result;
         }
 
         private List<object> ConvertMessages(List<UnifiedMessage> messages)
@@ -136,6 +173,9 @@ namespace LLMAbstraction.Providers.OpenAI
 
             foreach (var message in messages)
             {
+                if (message.Role == MessageRole.System)
+                    continue;
+
                 var messageContent = new List<object>();
 
                 foreach (var block in message.Content)
@@ -176,6 +216,14 @@ namespace LLMAbstraction.Providers.OpenAI
                                 { "output", SerializeToolResult(toolResult.Output) }
                             });
                             break;
+
+                        case ProviderNativeContent:
+                            throw new NotSupportedException(
+                                "Provider-native content cannot be sent to OpenAI unless it is supplied through OpenAI continuation state.");
+
+                        default:
+                            throw new NotSupportedException(
+                                $"Content type '{block.Type}' is not supported by the OpenAI converter.");
                     }
                 }
 
@@ -213,6 +261,10 @@ namespace LLMAbstraction.Providers.OpenAI
                     { "image_url", $"data:{source.MediaType ?? "image/jpeg"};base64,{source.Data}" }
                 });
             }
+            else
+            {
+                throw new NotSupportedException("OpenAI image content requires a URL or base64 data.");
+            }
         }
 
         private static void AddMediaContent(List<object> content, MediaContent media)
@@ -246,6 +298,11 @@ namespace LLMAbstraction.Providers.OpenAI
                         { "image_url", $"data:{media.MediaType};base64,{media.Source.Base64Data}" }
                     });
                 }
+                else
+                {
+                    throw new NotSupportedException(
+                        "OpenAI image media requires a file ID, URL, or base64 data. Provider file URIs are not accepted as image URLs.");
+                }
 
                 return;
             }
@@ -274,6 +331,11 @@ namespace LLMAbstraction.Providers.OpenAI
                     { "filename", media.Source.FileName ?? "input" },
                     { "file_data", $"data:{media.MediaType};base64,{media.Source.Base64Data}" }
                 });
+            }
+            else
+            {
+                throw new NotSupportedException(
+                    "OpenAI media content requires a file ID, URL, or base64 data. Provider file URIs are not accepted as file URLs.");
             }
         }
 
@@ -370,7 +432,18 @@ namespace LLMAbstraction.Providers.OpenAI
             {
                 if ((content.Type == "output_text" || content.Type == "text") && content.Text != null)
                 {
-                    message.Content.Add(new TextContent { Text = content.Text });
+                    var text = new TextContent { Text = content.Text };
+                    if (content.ExtensionData != null && content.ExtensionData.Count > 0)
+                    {
+                        text.ProviderMetadata = content.ExtensionData.ToDictionary(
+                            pair => $"openai.{pair.Key}",
+                            pair => (object)pair.Value.Clone());
+                    }
+                    message.Content.Add(text);
+                }
+                else if (content.Type == "refusal" && content.Refusal != null)
+                {
+                    message.Content.Add(new RefusalContent { Refusal = content.Refusal });
                 }
             }
         }
@@ -408,6 +481,9 @@ namespace LLMAbstraction.Providers.OpenAI
         {
             if (message.Content.Any(block => block is ToolCallContent))
                 return FinishReason.ToolCalls;
+
+            if (message.Content.Any(block => block is RefusalContent))
+                return FinishReason.ContentFilter;
 
             if (response.Status == "incomplete")
             {

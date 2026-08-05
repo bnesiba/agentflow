@@ -9,6 +9,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using LLMAbstraction.Core.Interfaces;
 using LLMAbstraction.Core.Models;
+using LLMAbstraction.Core.Errors;
+using LLMAbstraction.Core;
 using LLMAbstraction.Providers.Claude.Models;
 
 namespace LLMAbstraction.Providers.Claude
@@ -66,6 +68,7 @@ namespace LLMAbstraction.Providers.Claude
         {
             // Convert unified request to Claude format
             var claudeRequest = _converter.ConvertRequest(request);
+            claudeRequest.Stream = false;
 
             // Serialize request
             var jsonOptions = new JsonSerializerOptions
@@ -82,7 +85,7 @@ namespace LLMAbstraction.Providers.Claude
                 Content = content
             };
             AddRequestSpecificHeaders(httpRequest, request);
-            var response = await _httpClient.SendAsync(
+            using var response = await _httpClient.SendAsync(
                 httpRequest,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
@@ -91,8 +94,7 @@ namespace LLMAbstraction.Providers.Claude
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-                throw new HttpRequestException(
-                    $"Claude API request failed with status {response.StatusCode}: {errorContent}");
+                throw ProviderErrorParser.Create(LLMProvider.Claude, response, errorContent);
             }
 
             // Parse response
@@ -133,7 +135,7 @@ namespace LLMAbstraction.Providers.Claude
                 Content = content
             };
             AddRequestSpecificHeaders(httpRequest, request);
-            var response = await _httpClient.SendAsync(
+            using var response = await _httpClient.SendAsync(
                 httpRequest,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
@@ -142,8 +144,7 @@ namespace LLMAbstraction.Providers.Claude
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-                throw new HttpRequestException(
-                    $"Claude API request failed with status {response.StatusCode}: {errorContent}");
+                throw ProviderErrorParser.Create(LLMProvider.Claude, response, errorContent);
             }
 
             // Stream response
@@ -153,7 +154,13 @@ namespace LLMAbstraction.Providers.Claude
             string? messageId = null;
             string? model = null;
             FinishReason? finishReason = null;
-            var contentBlocks = new Dictionary<int, ClaudeContentBlock>();
+            ClaudeUsage? initialUsage = null;
+            var contentBlocks = new Dictionary<int, ClaudeStreamBlockState>();
+            var completedMessage = new UnifiedMessage
+            {
+                Role = MessageRole.Assistant,
+                Content = new List<ContentBlock>()
+            };
 
             while (!reader.EndOfStream)
             {
@@ -176,13 +183,14 @@ namespace LLMAbstraction.Providers.Claude
                             var messageStart = JsonSerializer.Deserialize<ClaudeMessageStart>(data, jsonOptions);
                             messageId = messageStart?.Message?.Id;
                             model = messageStart?.Message?.Model;
+                            initialUsage = messageStart?.Message?.Usage;
                             break;
 
                         case "content_block_start":
                             var blockStart = JsonSerializer.Deserialize<ClaudeContentBlockStart>(data, jsonOptions);
                             if (blockStart?.ContentBlock != null)
                             {
-                                contentBlocks[blockStart.Index] = blockStart.ContentBlock;
+                                contentBlocks[blockStart.Index] = new ClaudeStreamBlockState(blockStart.ContentBlock);
 
                                 if (blockStart.ContentBlock.Type == "tool_use")
                                 {
@@ -213,6 +221,9 @@ namespace LLMAbstraction.Providers.Claude
                             var delta = JsonSerializer.Deserialize<ClaudeContentBlockDelta>(data, jsonOptions);
                             if (delta?.Delta?.Text != null)
                             {
+                                if (contentBlocks.TryGetValue(delta.Index, out var textState))
+                                    textState.Text.Append(delta.Delta.Text);
+
                                 yield return new StreamChunk
                                 {
                                     Id = messageId ?? string.Empty,
@@ -227,6 +238,7 @@ namespace LLMAbstraction.Providers.Claude
                             else if (delta?.Delta?.PartialJson != null)
                             {
                                 contentBlocks.TryGetValue(delta.Index, out var block);
+                                block?.PartialJson.Append(delta.Delta.PartialJson);
                                 yield return new StreamChunk
                                 {
                                     Id = messageId ?? string.Empty,
@@ -239,8 +251,8 @@ namespace LLMAbstraction.Providers.Claude
                                             new ToolCallDelta
                                             {
                                                 Index = delta.Index,
-                                                Id = block?.Id,
-                                                Name = block?.Name,
+                                                Id = block?.Block.Id,
+                                                Name = block?.Block.Name,
                                                 Arguments = delta.Delta.PartialJson,
                                                 Type = "tool_use"
                                             }
@@ -250,6 +262,14 @@ namespace LLMAbstraction.Providers.Claude
                             }
                             else if (delta?.Delta?.Thinking != null || delta?.Delta?.Signature != null)
                             {
+                                if (contentBlocks.TryGetValue(delta.Index, out var thinkingState))
+                                {
+                                    if (delta.Delta.Thinking != null)
+                                        thinkingState.Thinking.Append(delta.Delta.Thinking);
+                                    if (delta.Delta.Signature != null)
+                                        thinkingState.Signature.Append(delta.Delta.Signature);
+                                }
+
                                 yield return new StreamChunk
                                 {
                                     Id = messageId ?? string.Empty,
@@ -266,6 +286,46 @@ namespace LLMAbstraction.Providers.Claude
                             }
                             break;
 
+                        case "content_block_stop":
+                            var blockStop = JsonSerializer.Deserialize<ClaudeContentBlockStop>(data, jsonOptions);
+                            if (blockStop != null && contentBlocks.Remove(blockStop.Index, out var completedState))
+                            {
+                                var completedBlock = completedState.Complete();
+                                var unifiedBlock = ClaudeConverter.ConvertResponseContentBlock(completedBlock);
+                                completedMessage.Content.Add(unifiedBlock);
+
+                                var completedDelta = new StreamDelta
+                                {
+                                    ContentBlocks = new List<ContentBlock> { unifiedBlock }
+                                };
+
+                                if (completedBlock.Type == "tool_use")
+                                {
+                                    completedDelta.ToolCalls = new List<ToolCallDelta>
+                                    {
+                                        new ToolCallDelta
+                                        {
+                                            Index = blockStop.Index,
+                                            Id = completedBlock.Id,
+                                            Name = completedBlock.Name,
+                                            CompleteArguments = completedState.PartialJson.ToString(),
+                                            IsComplete = true,
+                                            Type = "tool_use",
+                                            NativeRepresentation = unifiedBlock.NativeRepresentation
+                                        }
+                                    };
+                                }
+
+                                yield return new StreamChunk
+                                {
+                                    Id = messageId ?? string.Empty,
+                                    Model = model ?? string.Empty,
+                                    ChoiceIndex = 0,
+                                    Delta = completedDelta
+                                };
+                            }
+                            break;
+
                         case "message_delta":
                             var messageDelta = JsonSerializer.Deserialize<ClaudeMessageDelta>(data, jsonOptions);
                             if (messageDelta?.Delta?.StopReason != null)
@@ -276,6 +336,8 @@ namespace LLMAbstraction.Providers.Claude
                                     "max_tokens" => FinishReason.MaxTokens,
                                     "stop_sequence" => FinishReason.Stop,
                                     "tool_use" => FinishReason.ToolCalls,
+                                    "refusal" => FinishReason.ContentFilter,
+                                    "model_context_window_exceeded" => FinishReason.MaxTokens,
                                     _ => FinishReason.Other
                                 };
 
@@ -286,17 +348,67 @@ namespace LLMAbstraction.Providers.Claude
                                     ChoiceIndex = 0,
                                     Delta = new StreamDelta(),
                                     FinishReason = finishReason,
-                                    Usage = messageDelta.Usage != null ? new UsageInfo
-                                    {
-                                        InputTokens = messageDelta.Usage.InputTokens,
-                                        OutputTokens = messageDelta.Usage.OutputTokens,
-                                        TotalTokens = messageDelta.Usage.InputTokens + messageDelta.Usage.OutputTokens
-                                    } : null
+                                    Usage = ConvertStreamingUsage(initialUsage, messageDelta.Usage),
+                                    CompletedMessage = completedMessage
                                 };
                             }
                             break;
                     }
                 }
+            }
+        }
+
+        private static UsageInfo? ConvertStreamingUsage(ClaudeUsage? initial, ClaudeUsage? final)
+        {
+            if (initial == null && final == null)
+                return null;
+
+            var inputTokens = initial?.InputTokens ?? final?.InputTokens ?? 0;
+            var outputTokens = final?.OutputTokens ?? initial?.OutputTokens ?? 0;
+            return new UsageInfo
+            {
+                InputTokens = inputTokens,
+                OutputTokens = outputTokens,
+                TotalTokens = inputTokens + outputTokens,
+                CacheCreationTokens = initial?.CacheCreationInputTokens ?? final?.CacheCreationInputTokens,
+                CacheReadTokens = initial?.CacheReadInputTokens ?? final?.CacheReadInputTokens
+            };
+        }
+
+        private sealed class ClaudeStreamBlockState
+        {
+            public ClaudeStreamBlockState(ClaudeContentBlock block)
+            {
+                Block = block;
+                Text.Append(block.Text);
+                Thinking.Append(block.Thinking);
+                Signature.Append(block.Signature);
+                if (block.Input != null && block.Input.Count > 0)
+                    PartialJson.Append(JsonSerializer.Serialize(block.Input));
+            }
+
+            public ClaudeContentBlock Block { get; }
+            public StringBuilder Text { get; } = new();
+            public StringBuilder Thinking { get; } = new();
+            public StringBuilder Signature { get; } = new();
+            public StringBuilder PartialJson { get; } = new();
+
+            public ClaudeContentBlock Complete()
+            {
+                if (Block.Type == "text")
+                    Block.Text = Text.ToString();
+                else if (Block.Type == "thinking")
+                {
+                    Block.Thinking = Thinking.ToString();
+                    Block.Signature = Signature.ToString();
+                }
+                else if (Block.Type == "tool_use" && PartialJson.Length > 0)
+                {
+                    Block.Input = JsonSerializer.Deserialize<Dictionary<string, object>>(
+                        PartialJson.ToString()) ?? new Dictionary<string, object>();
+                }
+
+                return Block;
             }
         }
 

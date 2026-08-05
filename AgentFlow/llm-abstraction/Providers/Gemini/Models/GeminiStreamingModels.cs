@@ -16,5 +16,8 @@ namespace LLMAbstraction.Providers.Gemini.Models
 
         [JsonPropertyName("modelVersion")]
         public string? ModelVersion { get; set; }
+
+        [JsonPropertyName("responseId")]
+        public string? ResponseId { get; set; }
     }
 }

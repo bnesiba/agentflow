@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
@@ -49,6 +50,9 @@ namespace LLMAbstraction.Providers.Claude.Models
 
         [JsonPropertyName("metadata")]
         public ClaudeMetadata? Metadata { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
     }
 
     /// <summary>
@@ -104,6 +108,9 @@ namespace LLMAbstraction.Providers.Claude.Models
         [JsonPropertyName("stop_reason")]
         public string? StopReason { get; set; }
 
+        [JsonPropertyName("stop_sequence")]
+        public string? StopSequence { get; set; }
+
         [JsonPropertyName("usage")]
         public ClaudeUsage Usage { get; set; } = new();
     }
@@ -136,6 +143,9 @@ namespace LLMAbstraction.Providers.Claude.Models
 
         [JsonPropertyName("data")]
         public string? Data { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
     }
 
     /// <summary>

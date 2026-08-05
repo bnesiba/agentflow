@@ -1,8 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using LLMAbstraction.Core.Interfaces;
 using LLMAbstraction.Core.Models;
+using LLMAbstraction.Core.Validation;
+using LLMAbstraction.Core;
 using LLMAbstraction.Providers.Gemini.Models;
 
 namespace LLMAbstraction.Providers.Gemini
@@ -12,8 +16,22 @@ namespace LLMAbstraction.Providers.Gemini
     /// </summary>
     public class GeminiConverter : IModelConverter<GeminiGenerateRequest, GeminiGenerateResponse>
     {
+        private static readonly HashSet<string> ProtectedRequestFields = new(StringComparer.Ordinal)
+        {
+            "contents", "systemInstruction", "generationConfig", "tools", "toolConfig", "safetySettings"
+        };
+        private static readonly HashSet<string> SeparatelyHandledOptionFields = new(StringComparer.Ordinal)
+        {
+            "safetySettings"
+        };
+        private static readonly JsonSerializerOptions NativeJsonOptions = new()
+        {
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        };
+
         public GeminiGenerateRequest ConvertRequest(UnifiedRequest request)
         {
+            LLMRequestValidator.ValidateAndThrow(request, LLMProvider.Gemini);
             var geminiRequest = new GeminiGenerateRequest
             {
                 Contents = ConvertMessages(request.Messages),
@@ -28,14 +46,15 @@ namespace LLMAbstraction.Providers.Gemini
                 }
             };
 
-            // Add system instruction if present
-            if (!string.IsNullOrEmpty(request.Instructions))
+            // Add normalized instruction text, including system-role messages.
+            var combinedInstructions = UnifiedRequestNormalization.CombineInstructions(request);
+            if (!string.IsNullOrEmpty(combinedInstructions))
             {
                 geminiRequest.SystemInstruction = new GeminiContent
                 {
                     Parts = new List<GeminiPart>
                     {
-                        new GeminiPart { Text = request.Instructions }
+                        new GeminiPart { Text = combinedInstructions }
                     }
                 };
             }
@@ -67,6 +86,11 @@ namespace LLMAbstraction.Providers.Gemini
                 geminiRequest.SafetySettings = typedSafetySettings;
             }
 
+            geminiRequest.AdditionalProperties = ProviderOptionMerger.ConvertAdditionalFields(
+                request.ProviderOptions?.Gemini,
+                ProtectedRequestFields,
+                SeparatelyHandledOptionFields);
+
             return geminiRequest;
         }
 
@@ -79,11 +103,19 @@ namespace LLMAbstraction.Providers.Gemini
                 for (int i = 0; i < response.Candidates.Count; i++)
                 {
                     var candidate = response.Candidates[i];
+                    var message = ConvertContent(candidate.Content);
                     choices.Add(new ResponseChoice
                     {
-                        Index = i,
-                        Message = ConvertContent(candidate.Content),
-                        FinishReason = ConvertFinishReason(candidate.FinishReason)
+                        Index = candidate.Index,
+                        Message = message,
+                        FinishReason = message.IsAssistantWithToolCalls()
+                            ? FinishReason.ToolCalls
+                            : ConvertFinishReason(candidate.FinishReason),
+                        ProviderMetadata = new Dictionary<string, object>
+                        {
+                            ["gemini.finishReason"] = candidate.FinishReason ?? string.Empty,
+                            ["gemini.safetyRatings"] = candidate.SafetyRatings ?? new List<GeminiSafetyRating>()
+                        }
                     });
                 }
             }
@@ -109,6 +141,7 @@ namespace LLMAbstraction.Providers.Gemini
         private List<GeminiContent> ConvertMessages(List<UnifiedMessage> messages)
         {
             var result = new List<GeminiContent>();
+            var toolNamesByCallId = new Dictionary<string, string>(StringComparer.Ordinal);
 
             foreach (var message in messages)
             {
@@ -124,7 +157,7 @@ namespace LLMAbstraction.Providers.Gemini
                     _ => throw new ArgumentException($"Unknown role: {message.Role}")
                 };
 
-                var parts = ConvertContentBlocks(message.Content);
+                var parts = ConvertContentBlocks(message.Content, toolNamesByCallId);
 
                 result.Add(new GeminiContent
                 {
@@ -136,12 +169,25 @@ namespace LLMAbstraction.Providers.Gemini
             return result;
         }
 
-        private List<GeminiPart> ConvertContentBlocks(List<ContentBlock> content)
+        private List<GeminiPart> ConvertContentBlocks(
+            List<ContentBlock> content,
+            Dictionary<string, string> toolNamesByCallId)
         {
             var parts = new List<GeminiPart>();
 
             foreach (var block in content)
             {
+                if (block is ToolCallContent knownToolCall && !string.IsNullOrEmpty(knownToolCall.Id))
+                    toolNamesByCallId[knownToolCall.Id] = knownToolCall.Name;
+
+                if (TryGetGeminiNativeValue(block, out var nativeValue))
+                {
+                    parts.Add(JsonSerializer.Deserialize<GeminiPart>(
+                        nativeValue.GetRawText(),
+                        NativeJsonOptions)!);
+                    continue;
+                }
+
                 switch (block)
                 {
                     case TextContent text:
@@ -160,7 +206,15 @@ namespace LLMAbstraction.Providers.Gemini
                                 }
                             });
                         }
-                        // Note: Gemini doesn't support URL-based images directly
+                        else if (!string.IsNullOrEmpty(image.Source.Url))
+                        {
+                            throw new NotSupportedException(
+                                "Gemini ImageContent does not accept arbitrary URLs. Upload the image or use MediaContent.Source.FileUri.");
+                        }
+                        else
+                        {
+                            throw new NotSupportedException("Gemini image content requires base64 data or a Gemini file URI.");
+                        }
                         break;
 
                     case MediaContent media:
@@ -182,20 +236,56 @@ namespace LLMAbstraction.Providers.Gemini
                         break;
 
                     case ToolResultContent toolResult:
+                        var toolName = ResolveToolResultName(toolResult, toolNamesByCallId);
                         parts.Add(new GeminiPart
                         {
                             FunctionResponse = new GeminiFunctionResponse
                             {
-                                Name = toolResult.ToolName ?? toolResult.ToolCallId,
+                                Name = toolName,
                                 Id = toolResult.ToolCallId,
                                 Response = ConvertToolResultOutput(toolResult.Output)
                             }
                         });
                         break;
+
+                    case ProviderNativeContent:
+                        throw new NotSupportedException(
+                            "Provider-native content cannot be sent to Gemini unless it originated from Gemini.");
+
+                    default:
+                        throw new NotSupportedException(
+                            $"Content type '{block.Type}' is not supported by the Gemini converter.");
                 }
             }
 
             return parts;
+        }
+
+        private static string ResolveToolResultName(
+            ToolResultContent toolResult,
+            Dictionary<string, string> toolNamesByCallId)
+        {
+            toolNamesByCallId.TryGetValue(toolResult.ToolCallId, out var knownName);
+
+            if (!string.IsNullOrEmpty(toolResult.ToolName))
+            {
+                if (knownName != null && !string.Equals(
+                    knownName,
+                    toolResult.ToolName,
+                    StringComparison.Ordinal))
+                {
+                    throw new ArgumentException(
+                        $"Gemini tool result name '{toolResult.ToolName}' does not match prior call '{toolResult.ToolCallId}' name '{knownName}'.");
+                }
+
+                return toolResult.ToolName;
+            }
+
+            if (knownName != null)
+                return knownName;
+
+            throw new ArgumentException(
+                $"Gemini tool result '{toolResult.ToolCallId}' requires ToolName because no matching prior function call is present in the request history.");
         }
 
         private GeminiFunctionDeclaration ConvertTool(ToolDefinition tool)
@@ -253,32 +343,93 @@ namespace LLMAbstraction.Providers.Gemini
             {
                 foreach (var part in content.Parts)
                 {
-                    if (!string.IsNullOrEmpty(part.Text))
-                    {
-                        message.Content.Add(new TextContent { Text = part.Text });
-                    }
-                    else if (part.FunctionCall != null)
-                    {
-                        var toolCall = new ToolCallContent
-                        {
-                            Id = part.FunctionCall.Id ?? Guid.NewGuid().ToString(),
-                            Name = part.FunctionCall.Name,
-                            Input = part.FunctionCall.Args ?? new Dictionary<string, object>()
-                        };
-                        if (!string.IsNullOrEmpty(part.ThoughtSignature))
-                        {
-                            toolCall.ProviderMetadata = new Dictionary<string, object>
-                            {
-                                { "gemini.thoughtSignature", part.ThoughtSignature }
-                            };
-                        }
-
-                        message.Content.Add(toolCall);
-                    }
+                    message.Content.Add(ConvertResponsePart(part));
                 }
             }
 
             return message;
+        }
+
+        internal static ContentBlock ConvertResponsePart(GeminiPart part)
+        {
+            var nativeRepresentation = ProviderNativeRepresentation.Create(
+                ProviderIds.Gemini,
+                JsonSerializer.SerializeToElement(part, NativeJsonOptions));
+
+            if (IsThoughtPart(part))
+            {
+                return new ProviderNativeContent
+                {
+                    NativeType = "thought",
+                    NativeRepresentation = nativeRepresentation
+                };
+            }
+
+            if (part.Text != null)
+            {
+                return new TextContent
+                {
+                    Text = part.Text,
+                    NativeRepresentation = nativeRepresentation
+                };
+            }
+
+            if (part.FunctionCall != null)
+            {
+                var toolCall = new ToolCallContent
+                {
+                    Id = part.FunctionCall.Id ?? Guid.NewGuid().ToString(),
+                    Name = part.FunctionCall.Name,
+                    Input = part.FunctionCall.Args ?? new Dictionary<string, object>(),
+                    NativeRepresentation = nativeRepresentation
+                };
+                if (!string.IsNullOrEmpty(part.ThoughtSignature))
+                {
+                    toolCall.ProviderMetadata = new Dictionary<string, object>
+                    {
+                        { "gemini.thoughtSignature", part.ThoughtSignature }
+                    };
+                }
+
+                return toolCall;
+            }
+
+            return new ProviderNativeContent
+            {
+                NativeType = GetNativePartType(part),
+                NativeRepresentation = nativeRepresentation
+            };
+        }
+
+        private static bool TryGetGeminiNativeValue(ContentBlock block, out JsonElement value)
+        {
+            if (block.NativeRepresentation?.Provider == ProviderIds.Gemini)
+            {
+                value = block.NativeRepresentation.Value.Clone();
+                return true;
+            }
+
+            value = default;
+            return false;
+        }
+
+        private static bool IsThoughtPart(GeminiPart part)
+        {
+            return part.AdditionalProperties != null &&
+                part.AdditionalProperties.TryGetValue("thought", out var thought) &&
+                thought.ValueKind == JsonValueKind.True;
+        }
+
+        private static string GetNativePartType(GeminiPart part)
+        {
+            if (part.InlineData != null)
+                return "inlineData";
+            if (part.FileData != null)
+                return "fileData";
+            if (part.FunctionResponse != null)
+                return "functionResponse";
+
+            return part.AdditionalProperties?.Keys.FirstOrDefault() ?? "unknown";
         }
 
         private void ConvertResponseFormat(GeminiGenerateRequest request, ResponseFormat responseFormat)
@@ -337,7 +488,13 @@ namespace LLMAbstraction.Providers.Gemini
                 return;
             }
 
-            var fileUri = media.Source.FileUri ?? media.Source.Url;
+            if (!string.IsNullOrEmpty(media.Source.Url) && string.IsNullOrEmpty(media.Source.FileUri))
+            {
+                throw new NotSupportedException(
+                    "Gemini media URLs are not interchangeable with Gemini Files API URIs. Set MediaSource.FileUri.");
+            }
+
+            var fileUri = media.Source.FileUri;
             if (!string.IsNullOrEmpty(fileUri))
             {
                 parts.Add(new GeminiPart
@@ -349,7 +506,10 @@ namespace LLMAbstraction.Providers.Gemini
                         DisplayName = media.Source.FileName
                     }
                 });
+                return;
             }
+
+            throw new NotSupportedException("Gemini media content requires base64 data or a Gemini file URI.");
         }
 
         private static void ApplyGeminiProviderMetadata(
@@ -385,6 +545,12 @@ namespace LLMAbstraction.Providers.Gemini
                 "MAX_TOKENS" => FinishReason.MaxTokens,
                 "SAFETY" => FinishReason.ContentFilter,
                 "RECITATION" => FinishReason.ContentFilter,
+                "BLOCKLIST" => FinishReason.ContentFilter,
+                "PROHIBITED_CONTENT" => FinishReason.ContentFilter,
+                "SPII" => FinishReason.ContentFilter,
+                "IMAGE_SAFETY" => FinishReason.ContentFilter,
+                "MALFORMED_FUNCTION_CALL" => FinishReason.Error,
+                "UNEXPECTED_TOOL_CALL" => FinishReason.Error,
                 _ => FinishReason.Other
             };
         }

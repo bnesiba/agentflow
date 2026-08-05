@@ -12,3 +12,5 @@
 /AgentFlow/LLMAbstraction.ConsoleExample/obj
 /AgentFlow/llm-abstraction/bin/Debug/net6.0
 /AgentFlow/llm-abstraction/bin/Debug/net8.0
+/AgentFlow/llm-abstraction.Tests/bin/Debug/net8.0
+/AgentFlow/llm-abstraction.Tests/obj

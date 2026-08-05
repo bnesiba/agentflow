@@ -45,6 +45,12 @@ namespace LLMAbstraction.Providers.Claude.Models
         public ClaudeDelta? Delta { get; set; }
     }
 
+    public class ClaudeContentBlockStop : ClaudeStreamEvent
+    {
+        [JsonPropertyName("index")]
+        public int Index { get; set; }
+    }
+
     /// <summary>
     /// Claude Delta
     /// </summary>

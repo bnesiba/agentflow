@@ -15,6 +15,9 @@ namespace LLMAbstraction.Providers.OpenAI.Models
         [JsonPropertyName("response")]
         public OpenAIResponse? Response { get; set; }
 
+        [JsonPropertyName("item")]
+        public OpenAIOutputItem? Item { get; set; }
+
         [JsonPropertyName("response_id")]
         public string? ResponseId { get; set; }
 

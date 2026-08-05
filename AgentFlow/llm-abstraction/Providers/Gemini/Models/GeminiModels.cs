@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace LLMAbstraction.Providers.Gemini.Models
@@ -25,6 +26,9 @@ namespace LLMAbstraction.Providers.Gemini.Models
 
         [JsonPropertyName("safetySettings")]
         public List<Dictionary<string, object>>? SafetySettings { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
     }
 
     /// <summary>
@@ -61,6 +65,9 @@ namespace LLMAbstraction.Providers.Gemini.Models
 
         [JsonPropertyName("thoughtSignature")]
         public string? ThoughtSignature { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
     }
 
     /// <summary>

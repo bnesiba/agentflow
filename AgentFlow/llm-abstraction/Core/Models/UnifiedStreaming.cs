@@ -38,6 +38,19 @@ namespace LLMAbstraction.Core.Models
         public UsageInfo? Usage { get; set; }
 
         public Dictionary<string, object>? ProviderMetadata { get; set; }
+
+        /// <summary>
+        /// Provider-bound continuation state when the streaming provider supplies
+        /// a complete final response object.
+        /// </summary>
+        public ProviderContinuationState? Continuation { get; set; }
+
+        /// <summary>
+        /// Fully accumulated assistant message when the provider stream reaches a
+        /// terminal event. This can be appended to conversation history without
+        /// reconstructing native signed blocks from deltas.
+        /// </summary>
+        public UnifiedMessage? CompletedMessage { get; set; }
     }
 
     /// <summary>
@@ -59,6 +72,12 @@ namespace LLMAbstraction.Core.Models
         /// Tool call deltas
         /// </summary>
         public List<ToolCallDelta>? ToolCalls { get; set; }
+
+        /// <summary>
+        /// Complete provider-native content blocks observed in this event. Text in
+        /// <see cref="Content"/> remains the display-oriented incremental delta.
+        /// </summary>
+        public List<ContentBlock>? ContentBlocks { get; set; }
     }
 
     /// <summary>
@@ -85,6 +104,23 @@ namespace LLMAbstraction.Core.Models
         /// Arguments delta (JSON string fragment)
         /// </summary>
         public string? Arguments { get; set; }
+
+        /// <summary>
+        /// Complete arguments JSON when the tool call has finished streaming.
+        /// </summary>
+        public string? CompleteArguments { get; set; }
+
+        /// <summary>
+        /// True when the provider has completed this tool call.
+        /// </summary>
+        public bool IsComplete { get; set; }
+
+        /// <summary>
+        /// Provider response item identifier when it differs from the call ID.
+        /// </summary>
+        public string? ItemId { get; set; }
+
+        public ProviderNativeRepresentation? NativeRepresentation { get; set; }
 
         public string? Type { get; set; }
     }

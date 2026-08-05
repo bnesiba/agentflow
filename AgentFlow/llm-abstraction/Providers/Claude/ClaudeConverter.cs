@@ -1,8 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using LLMAbstraction.Core.Interfaces;
 using LLMAbstraction.Core.Models;
+using LLMAbstraction.Core.Validation;
+using LLMAbstraction.Core;
 using LLMAbstraction.Providers.Claude.Models;
 
 namespace LLMAbstraction.Providers.Claude
@@ -12,8 +16,23 @@ namespace LLMAbstraction.Providers.Claude
     /// </summary>
     public class ClaudeConverter : IModelConverter<ClaudeMessageRequest, ClaudeMessageResponse>
     {
+        private static readonly HashSet<string> ProtectedRequestFields = new(StringComparer.Ordinal)
+        {
+            "model", "max_tokens", "messages", "system", "temperature", "top_p", "top_k",
+            "stop_sequences", "stream", "tools", "tool_choice", "output_config", "thinking", "metadata"
+        };
+        private static readonly HashSet<string> SeparatelyHandledOptionFields = new(StringComparer.Ordinal)
+        {
+            "anthropicBeta"
+        };
+        private static readonly JsonSerializerOptions NativeJsonOptions = new()
+        {
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        };
+
         public ClaudeMessageRequest ConvertRequest(UnifiedRequest request)
         {
+            LLMRequestValidator.ValidateAndThrow(request, LLMProvider.Claude);
             var thinking = ConvertReasoning(request.Reasoning);
 
             var claudeRequest = new ClaudeMessageRequest
@@ -21,7 +40,7 @@ namespace LLMAbstraction.Providers.Claude
                 Model = request.Model,
                 MaxTokens = request.Parameters.MaxOutputTokens ?? 1024, // Claude requires max_tokens
                 Messages = ConvertMessages(request.Messages),
-                System = request.Instructions,
+                System = UnifiedRequestNormalization.CombineInstructions(request),
                 Temperature = SupportsTemperature(thinking) ? request.Parameters.Temperature : null,
                 TopP = SupportsTopP(thinking, request.Parameters.TopP) ? request.Parameters.TopP : null,
                 TopK = SupportsTopK(thinking) ? request.Parameters.TopK : null,
@@ -30,7 +49,11 @@ namespace LLMAbstraction.Providers.Claude
                 Thinking = thinking,
                 Metadata = request.Metadata?.UserId != null
                     ? new ClaudeMetadata { UserId = request.Metadata.UserId }
-                    : null
+                    : null,
+                AdditionalProperties = ProviderOptionMerger.ConvertAdditionalFields(
+                    request.ProviderOptions?.Claude,
+                    ProtectedRequestFields,
+                    SeparatelyHandledOptionFields)
             };
 
             // Convert tools if present
@@ -91,6 +114,13 @@ namespace LLMAbstraction.Providers.Claude
                     TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens,
                     CacheCreationTokens = response.Usage.CacheCreationInputTokens,
                     CacheReadTokens = response.Usage.CacheReadInputTokens
+                },
+                ProviderMetadata = new Dictionary<string, object>
+                {
+                    ["claude.stopReason"] = response.StopReason ?? string.Empty,
+                    ["claude.stopSequence"] = response.StopSequence ?? string.Empty,
+                    ["claude.cacheCreationEphemeral5mTokens"] = response.Usage.Ephemeral5mInputTokens ?? 0,
+                    ["claude.cacheCreationEphemeral1hTokens"] = response.Usage.Ephemeral1hInputTokens ?? 0
                 }
             };
         }
@@ -128,7 +158,9 @@ namespace LLMAbstraction.Providers.Claude
         private object ConvertContent(List<ContentBlock> content)
         {
             // If single text block, use string shorthand
-            if (content.Count == 1 && content[0] is TextContent textContent)
+            if (content.Count == 1 &&
+                content[0] is TextContent textContent &&
+                !HasClaudeNativeRepresentation(textContent))
             {
                 return textContent.Text;
             }
@@ -138,6 +170,12 @@ namespace LLMAbstraction.Providers.Claude
 
             foreach (var block in content)
             {
+                if (TryGetClaudeNativeValue(block, out var nativeValue))
+                {
+                    blocks.Add(nativeValue);
+                    continue;
+                }
+
                 switch (block)
                 {
                     case TextContent text:
@@ -174,6 +212,10 @@ namespace LLMAbstraction.Providers.Claude
                                 }
                             });
                         }
+                        else
+                        {
+                            throw new NotSupportedException("Claude image content requires a URL or base64 data.");
+                        }
                         break;
 
                     case MediaContent media:
@@ -199,6 +241,14 @@ namespace LLMAbstraction.Providers.Claude
                             is_error = toolResult.IsError
                         });
                         break;
+
+                    case ProviderNativeContent:
+                        throw new NotSupportedException(
+                            "Provider-native content cannot be sent to Claude unless it originated from Claude.");
+
+                    default:
+                        throw new NotSupportedException(
+                            $"Content type '{block.Type}' is not supported by the Claude converter.");
                 }
             }
 
@@ -209,7 +259,10 @@ namespace LLMAbstraction.Providers.Claude
         {
             var contentType = media.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
                 ? "image"
-                : "document";
+                : media.MediaType == "application/pdf" || media.MediaType == "text/plain"
+                    ? "document"
+                    : throw new NotSupportedException(
+                        $"Claude media type '{media.MediaType}' is not supported by this converter.");
 
             if (!string.IsNullOrEmpty(media.Source.FileId))
             {
@@ -237,16 +290,21 @@ namespace LLMAbstraction.Providers.Claude
                 };
             }
 
-            return new
+            if (!string.IsNullOrEmpty(media.Source.Base64Data))
             {
-                type = contentType,
-                source = new
+                return new
                 {
-                    type = "base64",
-                    media_type = media.MediaType,
-                    data = media.Source.Base64Data ?? string.Empty
-                }
-            };
+                    type = contentType,
+                    source = new
+                    {
+                        type = "base64",
+                        media_type = media.MediaType,
+                        data = media.Source.Base64Data
+                    }
+                };
+            }
+
+            throw new NotSupportedException("Claude media content requires a file ID, URL, file URI, or base64 data.");
         }
 
         private ClaudeTool ConvertTool(ToolDefinition tool)
@@ -289,31 +347,67 @@ namespace LLMAbstraction.Providers.Claude
 
             foreach (var block in response.Content)
             {
-                if (block.Type == "text")
-                {
-                    message.Content.Add(new TextContent { Text = block.Text ?? string.Empty });
-                }
-                else if (block.Type == "tool_use")
-                {
-                    message.Content.Add(new ToolCallContent
-                    {
-                        Id = block.Id ?? string.Empty,
-                        Name = block.Name ?? string.Empty,
-                        Input = block.Input ?? new Dictionary<string, object>()
-                    });
-                }
-                else if (block.Type == "thinking" || block.Type == "redacted_thinking")
-                {
-                    message.ProviderMetadata ??= new Dictionary<string, object>();
-                    message.ProviderMetadata[$"claude.{block.Type}"] = block;
-                }
+                message.Content.Add(ConvertResponseContentBlock(block));
             }
 
             return message;
         }
 
-        private ClaudeOutputConfig ConvertResponseFormat(ResponseFormat responseFormat)
+        internal static ContentBlock ConvertResponseContentBlock(ClaudeContentBlock block)
         {
+            var nativeRepresentation = ProviderNativeRepresentation.Create(
+                ProviderIds.Claude,
+                JsonSerializer.SerializeToElement(block, NativeJsonOptions));
+
+            if (block.Type == "text")
+            {
+                return new TextContent
+                {
+                    Text = block.Text ?? string.Empty,
+                    NativeRepresentation = nativeRepresentation
+                };
+            }
+
+            if (block.Type == "tool_use")
+            {
+                return new ToolCallContent
+                {
+                    Id = block.Id ?? string.Empty,
+                    Name = block.Name ?? string.Empty,
+                    Input = block.Input ?? new Dictionary<string, object>(),
+                    NativeRepresentation = nativeRepresentation
+                };
+            }
+
+            return new ProviderNativeContent
+            {
+                NativeType = block.Type,
+                NativeRepresentation = nativeRepresentation
+            };
+        }
+
+        private static bool HasClaudeNativeRepresentation(ContentBlock block)
+        {
+            return block.NativeRepresentation?.Provider == ProviderIds.Claude;
+        }
+
+        private static bool TryGetClaudeNativeValue(ContentBlock block, out JsonElement value)
+        {
+            if (HasClaudeNativeRepresentation(block))
+            {
+                value = block.NativeRepresentation!.Value.Clone();
+                return true;
+            }
+
+            value = default;
+            return false;
+        }
+
+        private ClaudeOutputConfig? ConvertResponseFormat(ResponseFormat responseFormat)
+        {
+            if (responseFormat.Type == ResponseFormatType.Text)
+                return null;
+
             var outputConfig = new ClaudeOutputConfig
             {
                 Format = new ClaudeOutputFormat()
@@ -378,6 +472,8 @@ namespace LLMAbstraction.Providers.Claude
                 "max_tokens" => FinishReason.MaxTokens,
                 "stop_sequence" => FinishReason.Stop,
                 "tool_use" => FinishReason.ToolCalls,
+                "refusal" => FinishReason.ContentFilter,
+                "model_context_window_exceeded" => FinishReason.MaxTokens,
                 _ => FinishReason.Other
             };
         }

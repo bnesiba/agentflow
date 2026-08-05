@@ -10,6 +10,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using LLMAbstraction.Core.Interfaces;
 using LLMAbstraction.Core.Models;
+using LLMAbstraction.Core.Errors;
+using LLMAbstraction.Core;
 using LLMAbstraction.Providers.OpenAI.Models;
 
 namespace LLMAbstraction.Providers.OpenAI
@@ -58,12 +60,13 @@ namespace LLMAbstraction.Providers.OpenAI
             CancellationToken cancellationToken = default)
         {
             var openAIRequest = _converter.ConvertRequest(request);
+            openAIRequest.Stream = false;
 
             var jsonOptions = CreateJsonOptions();
             var jsonContent = JsonSerializer.Serialize(openAIRequest, jsonOptions);
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
-            var response = await _httpClient.PostAsync(
+            using var response = await _httpClient.PostAsync(
                 "responses",
                 content,
                 cancellationToken);
@@ -71,8 +74,7 @@ namespace LLMAbstraction.Providers.OpenAI
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-                throw new HttpRequestException(
-                    $"OpenAI API request failed with status {response.StatusCode}: {errorContent}");
+                throw ProviderErrorParser.Create(LLMProvider.OpenAI, response, errorContent);
             }
 
             var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -103,7 +105,7 @@ namespace LLMAbstraction.Providers.OpenAI
             {
                 Content = content
             };
-            var response = await _httpClient.SendAsync(
+            using var response = await _httpClient.SendAsync(
                 httpRequest,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
@@ -111,12 +113,12 @@ namespace LLMAbstraction.Providers.OpenAI
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-                throw new HttpRequestException(
-                    $"OpenAI API request failed with status {response.StatusCode}: {errorContent}");
+                throw ProviderErrorParser.Create(LLMProvider.OpenAI, response, errorContent);
             }
 
             using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var reader = new StreamReader(stream);
+            var streamState = new OpenAIStreamState();
 
             while (!reader.EndOfStream)
             {
@@ -133,15 +135,17 @@ namespace LLMAbstraction.Providers.OpenAI
                 {
                     streamEvent = JsonSerializer.Deserialize<OpenAIResponseStreamEvent>(data, jsonOptions);
                 }
-                catch
+                catch (JsonException exception)
                 {
-                    continue;
+                    throw new InvalidOperationException(
+                        "Failed to deserialize an OpenAI Responses streaming event.",
+                        exception);
                 }
 
                 if (streamEvent == null)
                     continue;
 
-                var converted = ConvertStreamEvent(streamEvent);
+                var converted = ConvertStreamEvent(streamEvent, streamState);
                 if (converted != null)
                 {
                     yield return converted;
@@ -165,15 +169,55 @@ namespace LLMAbstraction.Providers.OpenAI
                 : baseUrl + "/");
         }
 
-        private static StreamChunk? ConvertStreamEvent(OpenAIResponseStreamEvent streamEvent)
+        private StreamChunk? ConvertStreamEvent(
+            OpenAIResponseStreamEvent streamEvent,
+            OpenAIStreamState state)
         {
+            if (streamEvent.Response != null)
+            {
+                state.ResponseId = streamEvent.Response.Id;
+                state.Model = streamEvent.Response.Model;
+            }
+            else if (!string.IsNullOrEmpty(streamEvent.ResponseId))
+            {
+                state.ResponseId = streamEvent.ResponseId;
+            }
+
             switch (streamEvent.Type)
             {
+                case "response.output_item.added":
+                    if (streamEvent.Item?.Type != "function_call")
+                        return null;
+
+                    var outputIndex = streamEvent.OutputIndex ?? 0;
+                    state.ToolCalls[outputIndex] = streamEvent.Item;
+                    return new StreamChunk
+                    {
+                        Id = state.ResponseId,
+                        Model = state.Model,
+                        ChoiceIndex = outputIndex,
+                        Delta = new StreamDelta
+                        {
+                            ToolCalls = new List<ToolCallDelta>
+                            {
+                                new ToolCallDelta
+                                {
+                                    Index = outputIndex,
+                                    Id = streamEvent.Item.CallId,
+                                    ItemId = streamEvent.Item.Id,
+                                    Name = streamEvent.Item.Name,
+                                    Type = "function",
+                                    IsComplete = false
+                                }
+                            }
+                        }
+                    };
+
                 case "response.output_text.delta":
                     return new StreamChunk
                     {
-                        Id = streamEvent.ResponseId ?? streamEvent.Response?.Id ?? string.Empty,
-                        Model = streamEvent.Response?.Model ?? string.Empty,
+                        Id = state.ResponseId,
+                        Model = state.Model,
                         ChoiceIndex = streamEvent.OutputIndex ?? 0,
                         Delta = new StreamDelta
                         {
@@ -182,9 +226,11 @@ namespace LLMAbstraction.Providers.OpenAI
                     };
 
                 case "response.function_call_arguments.delta":
+                    state.ToolCalls.TryGetValue(streamEvent.OutputIndex ?? 0, out var activeCall);
                     return new StreamChunk
                     {
-                        Id = streamEvent.ResponseId ?? string.Empty,
+                        Id = state.ResponseId,
+                        Model = state.Model,
                         ChoiceIndex = streamEvent.OutputIndex ?? 0,
                         Delta = new StreamDelta
                         {
@@ -193,7 +239,9 @@ namespace LLMAbstraction.Providers.OpenAI
                                 new ToolCallDelta
                                 {
                                     Index = streamEvent.OutputIndex ?? 0,
-                                    Id = streamEvent.ItemId,
+                                    Id = activeCall?.CallId,
+                                    ItemId = streamEvent.ItemId ?? activeCall?.Id,
+                                    Name = activeCall?.Name,
                                     Arguments = streamEvent.Delta,
                                     Type = "function"
                                 }
@@ -202,9 +250,12 @@ namespace LLMAbstraction.Providers.OpenAI
                     };
 
                 case "response.function_call_arguments.done":
+                    state.ToolCalls.TryGetValue(streamEvent.OutputIndex ?? 0, out var completedCall);
+                    state.CompletedToolCalls.Add(streamEvent.OutputIndex ?? 0);
                     return new StreamChunk
                     {
-                        Id = streamEvent.ResponseId ?? string.Empty,
+                        Id = state.ResponseId,
+                        Model = state.Model,
                         ChoiceIndex = streamEvent.OutputIndex ?? 0,
                         Delta = new StreamDelta
                         {
@@ -213,10 +264,44 @@ namespace LLMAbstraction.Providers.OpenAI
                                 new ToolCallDelta
                                 {
                                     Index = streamEvent.OutputIndex ?? 0,
-                                    Id = streamEvent.ItemId,
-                                    Name = streamEvent.Name,
-                                    Arguments = streamEvent.Arguments,
-                                    Type = "function"
+                                    Id = completedCall?.CallId,
+                                    ItemId = streamEvent.ItemId ?? completedCall?.Id,
+                                    Name = streamEvent.Name ?? completedCall?.Name,
+                                    CompleteArguments = streamEvent.Arguments,
+                                    Type = "function",
+                                    IsComplete = true
+                                }
+                            }
+                        }
+                    };
+
+                case "response.output_item.done":
+                    if (streamEvent.Item?.Type != "function_call")
+                        return null;
+
+                    var completedIndex = streamEvent.OutputIndex ?? 0;
+                    state.ToolCalls[completedIndex] = streamEvent.Item;
+                    if (!state.CompletedToolCalls.Add(completedIndex))
+                        return null;
+
+                    return new StreamChunk
+                    {
+                        Id = state.ResponseId,
+                        Model = state.Model,
+                        ChoiceIndex = completedIndex,
+                        Delta = new StreamDelta
+                        {
+                            ToolCalls = new List<ToolCallDelta>
+                            {
+                                new ToolCallDelta
+                                {
+                                    Index = completedIndex,
+                                    Id = streamEvent.Item.CallId,
+                                    ItemId = streamEvent.Item.Id,
+                                    Name = streamEvent.Item.Name,
+                                    CompleteArguments = streamEvent.Item.Arguments,
+                                    Type = "function",
+                                    IsComplete = true
                                 }
                             }
                         }
@@ -226,30 +311,47 @@ namespace LLMAbstraction.Providers.OpenAI
                 case "response.incomplete":
                     return new StreamChunk
                     {
-                        Id = streamEvent.Response?.Id ?? streamEvent.ResponseId ?? string.Empty,
-                        Model = streamEvent.Response?.Model ?? string.Empty,
+                        Id = state.ResponseId,
+                        Model = state.Model,
                         ChoiceIndex = 0,
                         Delta = new StreamDelta(),
                         FinishReason = streamEvent.Response != null
                             ? ConvertFinishReason(streamEvent.Response)
                             : FinishReason.Stop,
-                        Usage = streamEvent.Response?.Usage != null ? ConvertUsage(streamEvent.Response.Usage) : null
+                        Usage = streamEvent.Response?.Usage != null ? ConvertUsage(streamEvent.Response.Usage) : null,
+                        Continuation = streamEvent.Response != null
+                            ? OpenAIConverter.CreateContinuationState(streamEvent.Response)
+                            : null,
+                        CompletedMessage = streamEvent.Response != null
+                            ? _converter.ConvertResponse(streamEvent.Response).Choices[0].Message
+                            : null
                     };
 
                 case "response.failed":
                     return new StreamChunk
                     {
-                        Id = streamEvent.Response?.Id ?? streamEvent.ResponseId ?? string.Empty,
-                        Model = streamEvent.Response?.Model ?? string.Empty,
+                        Id = state.ResponseId,
+                        Model = state.Model,
                         ChoiceIndex = 0,
                         Delta = new StreamDelta(),
                         FinishReason = FinishReason.Error,
-                        Usage = streamEvent.Response?.Usage != null ? ConvertUsage(streamEvent.Response.Usage) : null
+                        Usage = streamEvent.Response?.Usage != null ? ConvertUsage(streamEvent.Response.Usage) : null,
+                        Continuation = streamEvent.Response != null
+                            ? OpenAIConverter.CreateContinuationState(streamEvent.Response)
+                            : null
                     };
 
                 default:
                     return null;
             }
+        }
+
+        private sealed class OpenAIStreamState
+        {
+            public string ResponseId { get; set; } = string.Empty;
+            public string Model { get; set; } = string.Empty;
+            public Dictionary<int, OpenAIOutputItem> ToolCalls { get; } = new();
+            public HashSet<int> CompletedToolCalls { get; } = new();
         }
 
         private static UsageInfo ConvertUsage(OpenAIResponseUsage usage)

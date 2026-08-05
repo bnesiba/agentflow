@@ -15,6 +15,9 @@ namespace LLMAbstraction.Providers.OpenAI.Models
         [JsonPropertyName("input")]
         public List<object> Input { get; set; } = new();
 
+        [JsonPropertyName("previous_response_id")]
+        public string? PreviousResponseId { get; set; }
+
         [JsonPropertyName("instructions")]
         public string? Instructions { get; set; }
 
@@ -50,6 +53,9 @@ namespace LLMAbstraction.Providers.OpenAI.Models
 
         [JsonPropertyName("metadata")]
         public Dictionary<string, string>? Metadata { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
     }
 
     public class OpenAIResponseTool
@@ -137,6 +143,9 @@ namespace LLMAbstraction.Providers.OpenAI.Models
 
         [JsonPropertyName("arguments")]
         public string? Arguments { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? ExtensionData { get; set; }
     }
 
     public class OpenAIOutputContent
@@ -146,6 +155,9 @@ namespace LLMAbstraction.Providers.OpenAI.Models
 
         [JsonPropertyName("text")]
         public string? Text { get; set; }
+
+        [JsonPropertyName("refusal")]
+        public string? Refusal { get; set; }
 
         [JsonExtensionData]
         public Dictionary<string, JsonElement>? ExtensionData { get; set; }

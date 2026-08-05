@@ -9,6 +9,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using LLMAbstraction.Core.Interfaces;
 using LLMAbstraction.Core.Models;
+using LLMAbstraction.Core.Errors;
+using LLMAbstraction.Core;
 using LLMAbstraction.Providers.Gemini.Models;
 
 namespace LLMAbstraction.Providers.Gemini
@@ -33,6 +35,7 @@ namespace LLMAbstraction.Providers.Gemini
             {
                 BaseAddress = CreateBaseAddress(_baseUrl)
             };
+            ConfigureHeaders();
         }
 
         public GeminiService(
@@ -46,6 +49,7 @@ namespace LLMAbstraction.Providers.Gemini
                 "https://generativelanguage.googleapis.com/v1beta";
             _converter = converter ?? new GeminiConverter();
             _httpClient.BaseAddress = CreateBaseAddress(_baseUrl);
+            ConfigureHeaders();
         }
 
         public async Task<UnifiedResponse> GenerateAsync(
@@ -57,7 +61,7 @@ namespace LLMAbstraction.Providers.Gemini
 
             // Build endpoint URL with model and API key
             // Gemini uses model in the URL path
-            var endpoint = $"models/{request.Model}:generateContent?key={_apiKey}";
+            var endpoint = $"models/{request.Model}:generateContent";
 
             // Serialize request
             var jsonOptions = new JsonSerializerOptions
@@ -69,7 +73,7 @@ namespace LLMAbstraction.Providers.Gemini
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
             // Make API call
-            var response = await _httpClient.PostAsync(
+            using var response = await _httpClient.PostAsync(
                 endpoint, 
                 content, 
                 cancellationToken);
@@ -78,8 +82,7 @@ namespace LLMAbstraction.Providers.Gemini
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-                throw new HttpRequestException(
-                    $"Gemini API request failed with status {response.StatusCode}: {errorContent}");
+                throw ProviderErrorParser.Create(LLMProvider.Gemini, response, errorContent);
             }
 
             // Parse response
@@ -114,12 +117,12 @@ namespace LLMAbstraction.Providers.Gemini
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
             // Use streaming endpoint
-            var endpoint = $"models/{request.Model}:streamGenerateContent?alt=sse&key={_apiKey}";
+            var endpoint = $"models/{request.Model}:streamGenerateContent?alt=sse";
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint)
             {
                 Content = content
             };
-            var response = await _httpClient.SendAsync(
+            using var response = await _httpClient.SendAsync(
                 httpRequest,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
@@ -128,13 +131,13 @@ namespace LLMAbstraction.Providers.Gemini
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-                throw new HttpRequestException(
-                    $"Gemini API request failed with status {response.StatusCode}: {errorContent}");
+                throw ProviderErrorParser.Create(LLMProvider.Gemini, response, errorContent);
             }
 
             // Stream response as server-sent events.
             using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var reader = new StreamReader(stream);
+            var accumulatedMessages = new Dictionary<int, UnifiedMessage>();
 
             while (!reader.EndOfStream)
             {
@@ -148,60 +151,141 @@ namespace LLMAbstraction.Providers.Gemini
                 {
                     chunk = JsonSerializer.Deserialize<GeminiStreamChunk>(data, jsonOptions);
                 }
-                catch
+                catch (JsonException exception)
                 {
-                    continue;
+                    throw new InvalidOperationException(
+                        "Failed to deserialize a Gemini streaming response event.",
+                        exception);
                 }
 
-                if (chunk?.Candidates == null || chunk.Candidates.Count == 0)
+                if (chunk == null)
                     continue;
+
+                if (chunk.Candidates == null || chunk.Candidates.Count == 0)
+                {
+                    if (chunk.UsageMetadata != null)
+                    {
+                        yield return new StreamChunk
+                        {
+                            Id = chunk.ResponseId ?? string.Empty,
+                            Model = chunk.ModelVersion ?? request.Model,
+                            ChoiceIndex = 0,
+                            Delta = new StreamDelta(),
+                            Usage = ConvertUsage(chunk.UsageMetadata)
+                        };
+                    }
+                    continue;
+                }
 
                 // Convert to unified format
                 foreach (var candidate in chunk.Candidates)
                 {
-                    yield return ConvertStreamChunk(request.Model, chunk, candidate);
+                    if (!accumulatedMessages.TryGetValue(candidate.Index, out var accumulatedMessage))
+                    {
+                        accumulatedMessage = new UnifiedMessage
+                        {
+                            Role = MessageRole.Assistant,
+                            Content = new List<ContentBlock>()
+                        };
+                        accumulatedMessages[candidate.Index] = accumulatedMessage;
+                    }
+
+                    yield return ConvertStreamChunk(request.Model, chunk, candidate, accumulatedMessage);
                 }
             }
         }
 
-        private StreamChunk ConvertStreamChunk(string model, GeminiStreamChunk chunk, GeminiCandidate candidate)
+        private StreamChunk ConvertStreamChunk(
+            string requestedModel,
+            GeminiStreamChunk chunk,
+            GeminiCandidate candidate,
+            UnifiedMessage accumulatedMessage)
         {
-            var delta = new StreamDelta();
+            var delta = new StreamDelta
+            {
+                ContentBlocks = new List<ContentBlock>(),
+                ToolCalls = new List<ToolCallDelta>()
+            };
+            var text = new StringBuilder();
 
             // Extract text content
             if (candidate.Content?.Parts != null)
             {
                 foreach (var part in candidate.Content.Parts)
                 {
-                    if (!string.IsNullOrEmpty(part.Text))
+                    var contentBlock = GeminiConverter.ConvertResponsePart(part);
+                    delta.ContentBlocks.Add(contentBlock);
+                    accumulatedMessage.Content.Add(contentBlock);
+
+                    if (contentBlock is TextContent textContent)
                     {
-                        delta.Content = part.Text;
-                        break; // Take first text part
+                        text.Append(textContent.Text);
+                    }
+                    else if (contentBlock is ToolCallContent toolCall)
+                    {
+                        delta.ToolCalls.Add(new ToolCallDelta
+                        {
+                            Index = delta.ToolCalls.Count,
+                            Id = toolCall.Id,
+                            Name = toolCall.Name,
+                            CompleteArguments = JsonSerializer.Serialize(toolCall.Input),
+                            IsComplete = true,
+                            Type = "function",
+                            NativeRepresentation = toolCall.NativeRepresentation
+                        });
                     }
                 }
             }
 
+            delta.Content = text.Length > 0 ? text.ToString() : null;
+            if (delta.ContentBlocks.Count == 0)
+                delta.ContentBlocks = null;
+            if (delta.ToolCalls.Count == 0)
+                delta.ToolCalls = null;
+
+            var finishReason = delta.ToolCalls != null
+                ? FinishReason.ToolCalls
+                : ConvertFinishReason(candidate.FinishReason);
+
             return new StreamChunk
             {
-                Id = chunk.ModelVersion ?? Guid.NewGuid().ToString(),
-                Model = model,
+                Id = chunk.ResponseId ?? string.Empty,
+                Model = chunk.ModelVersion ?? requestedModel,
                 ChoiceIndex = candidate.Index,
                 Delta = delta,
-                FinishReason = candidate.FinishReason switch
-                {
-                    "STOP" => FinishReason.Stop,
-                    "MAX_TOKENS" => FinishReason.MaxTokens,
-                    "SAFETY" => FinishReason.ContentFilter,
-                    "RECITATION" => FinishReason.ContentFilter,
-                    _ => null
-                },
-                Usage = chunk.UsageMetadata != null ? new UsageInfo
-                {
-                    InputTokens = chunk.UsageMetadata.PromptTokenCount,
-                    OutputTokens = chunk.UsageMetadata.CandidatesTokenCount,
-                    TotalTokens = chunk.UsageMetadata.TotalTokenCount,
-                    ReasoningTokens = chunk.UsageMetadata.ThoughtsTokenCount
-                } : null
+                FinishReason = finishReason,
+                Usage = chunk.UsageMetadata != null ? ConvertUsage(chunk.UsageMetadata) : null,
+                CompletedMessage = candidate.FinishReason != null ? accumulatedMessage : null
+            };
+        }
+
+        private static FinishReason? ConvertFinishReason(string? finishReason)
+        {
+            return finishReason switch
+            {
+                "STOP" => FinishReason.Stop,
+                "MAX_TOKENS" => FinishReason.MaxTokens,
+                "SAFETY" => FinishReason.ContentFilter,
+                "RECITATION" => FinishReason.ContentFilter,
+                "BLOCKLIST" => FinishReason.ContentFilter,
+                "PROHIBITED_CONTENT" => FinishReason.ContentFilter,
+                "SPII" => FinishReason.ContentFilter,
+                "IMAGE_SAFETY" => FinishReason.ContentFilter,
+                "MALFORMED_FUNCTION_CALL" => FinishReason.Error,
+                "UNEXPECTED_TOOL_CALL" => FinishReason.Error,
+                null => null,
+                _ => FinishReason.Other
+            };
+        }
+
+        private static UsageInfo ConvertUsage(GeminiUsageMetadata usage)
+        {
+            return new UsageInfo
+            {
+                InputTokens = usage.PromptTokenCount,
+                OutputTokens = usage.CandidatesTokenCount,
+                TotalTokens = usage.TotalTokenCount,
+                ReasoningTokens = usage.ThoughtsTokenCount
             };
         }
 
@@ -210,6 +294,12 @@ namespace LLMAbstraction.Providers.Gemini
             return new Uri(baseUrl.EndsWith("/", StringComparison.Ordinal)
                 ? baseUrl
                 : baseUrl + "/");
+        }
+
+        private void ConfigureHeaders()
+        {
+            if (!_httpClient.DefaultRequestHeaders.Contains("x-goog-api-key"))
+                _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("x-goog-api-key", _apiKey);
         }
     }
 }

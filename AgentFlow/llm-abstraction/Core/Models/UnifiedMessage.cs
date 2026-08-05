@@ -50,6 +50,25 @@ namespace LLMAbstraction.Core.Models
     {
         public abstract string Type { get; }
         public Dictionary<string, object>? ProviderMetadata { get; set; }
+
+        /// <summary>
+        /// Lossless native JSON retained from the provider response. When this
+        /// block is replayed to the same provider, the native value takes
+        /// precedence over a reconstructed portable representation.
+        /// </summary>
+        public ProviderNativeRepresentation? NativeRepresentation { get; set; }
+    }
+
+    /// <summary>
+    /// An ordered provider-native content block with no portable equivalent.
+    /// </summary>
+    public sealed class ProviderNativeContent : ContentBlock
+    {
+        public override string Type => "provider_native";
+
+        public string Provider => NativeRepresentation?.Provider ?? string.Empty;
+
+        public string NativeType { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -59,6 +78,15 @@ namespace LLMAbstraction.Core.Models
     {
         public override string Type => "text";
         public string Text { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// A provider refusal or safety response that is distinct from generated text.
+    /// </summary>
+    public sealed class RefusalContent : ContentBlock
+    {
+        public override string Type => "refusal";
+        public string Refusal { get; set; } = string.Empty;
     }
 
     /// <summary>
