@@ -1,0 +1,270 @@
+using System.Collections.Generic;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace LLMAbstraction.Providers.OpenAI.Models
+{
+    /// <summary>
+    /// OpenAI Responses API request.
+    /// </summary>
+    public class OpenAIResponseRequest
+    {
+        [JsonPropertyName("model")]
+        public string Model { get; set; } = string.Empty;
+
+        [JsonPropertyName("input")]
+        public List<object> Input { get; set; } = new();
+
+        [JsonPropertyName("previous_response_id")]
+        public string? PreviousResponseId { get; set; }
+
+        [JsonPropertyName("instructions")]
+        public string? Instructions { get; set; }
+
+        [JsonPropertyName("max_output_tokens")]
+        public int? MaxOutputTokens { get; set; }
+
+        [JsonPropertyName("temperature")]
+        public double? Temperature { get; set; }
+
+        [JsonPropertyName("top_p")]
+        public double? TopP { get; set; }
+
+        [JsonPropertyName("stream")]
+        public bool Stream { get; set; }
+
+        [JsonPropertyName("tools")]
+        public List<OpenAIResponseTool>? Tools { get; set; }
+
+        [JsonPropertyName("include")]
+        public List<string>? Include { get; set; }
+
+        [JsonPropertyName("tool_choice")]
+        public object? ToolChoice { get; set; }
+
+        [JsonPropertyName("parallel_tool_calls")]
+        public bool? ParallelToolCalls { get; set; }
+
+        [JsonPropertyName("text")]
+        public OpenAITextConfig? Text { get; set; }
+
+        [JsonPropertyName("reasoning")]
+        public OpenAIReasoningConfig? Reasoning { get; set; }
+
+        [JsonPropertyName("user")]
+        public string? User { get; set; }
+
+        [JsonPropertyName("metadata")]
+        public Dictionary<string, string>? Metadata { get; set; }
+
+        [JsonPropertyName("prompt_cache_key")]
+        public string? PromptCacheKey { get; set; }
+
+        [JsonPropertyName("prompt_cache_options")]
+        public OpenAIPromptCacheConfig? PromptCacheOptions { get; set; }
+
+        [JsonPropertyName("prompt_cache_retention")]
+        public string? PromptCacheRetention { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
+    }
+
+    public sealed class OpenAIPromptCacheConfig
+    {
+        [JsonPropertyName("mode")]
+        public string? Mode { get; set; }
+
+        [JsonPropertyName("ttl")]
+        public string? Ttl { get; set; }
+    }
+
+    public class OpenAIResponseTool
+    {
+        [JsonPropertyName("type")]
+        public string Type { get; set; } = "function";
+
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("description")]
+        public string? Description { get; set; }
+
+        [JsonPropertyName("parameters")]
+        public Dictionary<string, object>? Parameters { get; set; }
+
+        [JsonPropertyName("strict")]
+        public bool? Strict { get; set; }
+
+        [JsonPropertyName("filters")]
+        public Dictionary<string, object>? Filters { get; set; }
+
+        [JsonPropertyName("user_location")]
+        public Dictionary<string, object>? UserLocation { get; set; }
+
+        [JsonPropertyName("search_context_size")]
+        public string? SearchContextSize { get; set; }
+
+        [JsonPropertyName("return_token_budget")]
+        public string? ReturnTokenBudget { get; set; }
+
+        [JsonPropertyName("external_web_access")]
+        public bool? ExternalWebAccess { get; set; }
+
+        [JsonPropertyName("search_content_types")]
+        public List<string>? SearchContentTypes { get; set; }
+
+        [JsonPropertyName("image_settings")]
+        public Dictionary<string, object>? ImageSettings { get; set; }
+    }
+
+    public class OpenAITextConfig
+    {
+        [JsonPropertyName("format")]
+        public object? Format { get; set; }
+    }
+
+    public class OpenAIReasoningConfig
+    {
+        [JsonPropertyName("effort")]
+        public string? Effort { get; set; }
+
+        [JsonPropertyName("summary")]
+        public string? Summary { get; set; }
+
+        [JsonPropertyName("mode")]
+        public string? Mode { get; set; }
+
+        [JsonPropertyName("context")]
+        public string? Context { get; set; }
+    }
+
+    /// <summary>
+    /// OpenAI Responses API response.
+    /// </summary>
+    public class OpenAIResponse
+    {
+        [JsonPropertyName("id")]
+        public string Id { get; set; } = string.Empty;
+
+        [JsonPropertyName("model")]
+        public string Model { get; set; } = string.Empty;
+
+        [JsonPropertyName("status")]
+        public string? Status { get; set; }
+
+        [JsonPropertyName("output")]
+        public List<OpenAIOutputItem> Output { get; set; } = new();
+
+        [JsonPropertyName("usage")]
+        public OpenAIResponseUsage? Usage { get; set; }
+
+        [JsonPropertyName("incomplete_details")]
+        public OpenAIIncompleteDetails? IncompleteDetails { get; set; }
+
+        [JsonPropertyName("error")]
+        public OpenAIResponseError? Error { get; set; }
+    }
+
+    public class OpenAIOutputItem
+    {
+        [JsonPropertyName("id")]
+        public string? Id { get; set; }
+
+        [JsonPropertyName("type")]
+        public string Type { get; set; } = string.Empty;
+
+        [JsonPropertyName("status")]
+        public string? Status { get; set; }
+
+        [JsonPropertyName("role")]
+        public string? Role { get; set; }
+
+        [JsonPropertyName("content")]
+        public List<OpenAIOutputContent>? Content { get; set; }
+
+        [JsonPropertyName("call_id")]
+        public string? CallId { get; set; }
+
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("arguments")]
+        public string? Arguments { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+    }
+
+    public class OpenAIOutputContent
+    {
+        [JsonPropertyName("type")]
+        public string Type { get; set; } = string.Empty;
+
+        [JsonPropertyName("text")]
+        public string? Text { get; set; }
+
+        [JsonPropertyName("refusal")]
+        public string? Refusal { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+    }
+
+    public class OpenAIResponseUsage
+    {
+        [JsonPropertyName("input_tokens")]
+        public int InputTokens { get; set; }
+
+        [JsonPropertyName("output_tokens")]
+        public int OutputTokens { get; set; }
+
+        [JsonPropertyName("total_tokens")]
+        public int TotalTokens { get; set; }
+
+        [JsonPropertyName("input_tokens_details")]
+        public OpenAIInputTokenDetails? InputTokenDetails { get; set; }
+
+        [JsonPropertyName("output_tokens_details")]
+        public OpenAIOutputTokenDetails? OutputTokenDetails { get; set; }
+    }
+
+    public sealed class OpenAIInputTokenCountResponse
+    {
+        [JsonPropertyName("object")]
+        public string? Object { get; set; }
+
+        [JsonPropertyName("input_tokens")]
+        public int InputTokens { get; set; }
+    }
+
+    public class OpenAIInputTokenDetails
+    {
+        [JsonPropertyName("cached_tokens")]
+        public int? CachedTokens { get; set; }
+
+        [JsonPropertyName("cache_write_tokens")]
+        public int? CacheWriteTokens { get; set; }
+    }
+
+    public class OpenAIOutputTokenDetails
+    {
+        [JsonPropertyName("reasoning_tokens")]
+        public int? ReasoningTokens { get; set; }
+    }
+
+    public class OpenAIIncompleteDetails
+    {
+        [JsonPropertyName("reason")]
+        public string? Reason { get; set; }
+    }
+
+    public class OpenAIResponseError
+    {
+        [JsonPropertyName("code")]
+        public string? Code { get; set; }
+
+        [JsonPropertyName("message")]
+        public string? Message { get; set; }
+    }
+}

@@ -1,0 +1,249 @@
+using System.Collections.Generic;
+using System.Text.Json.Serialization;
+
+namespace LLMAbstraction.Core.Models
+{
+    /// <summary>
+    /// Represents the role of a message in a conversation
+    /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public enum MessageRole
+    {
+        System,
+        User,
+        Assistant,
+        Tool
+    }
+
+    /// <summary>
+    /// Unified message structure that works across all LLM providers
+    /// </summary>
+    public class UnifiedMessage
+    {
+        public MessageRole Role { get; set; }
+        public List<ContentBlock> Content { get; set; } = new();
+        public EvidenceCollection Evidence { get; set; } = new();
+        public Dictionary<string, object>? ProviderMetadata { get; set; }
+
+        // Convenience constructor for simple text messages
+        public UnifiedMessage(MessageRole role, string text)
+        {
+            Role = role;
+            Content = new List<ContentBlock>
+            {
+                new TextContent { Text = text }
+            };
+        }
+
+        public UnifiedMessage(MessageRole role, List<ContentBlock> content)
+        {
+            Role = role;
+            Content = content;
+        }
+
+        public UnifiedMessage() { }
+    }
+
+    /// <summary>
+    /// Base class for all content block types
+    /// </summary>
+    public abstract class ContentBlock
+    {
+        public abstract string Type { get; }
+        public Dictionary<string, object>? ProviderMetadata { get; set; }
+
+        /// <summary>
+        /// Lossless native JSON retained from the provider response. When this
+        /// block is replayed to the same provider, the native value takes
+        /// precedence over a reconstructed portable representation.
+        /// </summary>
+        public ProviderNativeRepresentation? NativeRepresentation { get; set; }
+
+        /// <summary>Optional stable-prefix cache breakpoint after this block.</summary>
+        public PromptCacheDirective? Cache { get; set; }
+    }
+
+    /// <summary>
+    /// An ordered provider-native content block with no portable equivalent.
+    /// </summary>
+    public sealed class ProviderNativeContent : ContentBlock
+    {
+        public override string Type => "provider_native";
+
+        public string Provider => NativeRepresentation?.Provider ?? string.Empty;
+
+        public string NativeType { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Text content block
+    /// </summary>
+    public class TextContent : ContentBlock
+    {
+        public override string Type => "text";
+        public string Text { get; set; } = string.Empty;
+        public List<Citation> Citations { get; set; } = new();
+    }
+
+    /// <summary>
+    /// A provider refusal or safety response that is distinct from generated text.
+    /// </summary>
+    public sealed class RefusalContent : ContentBlock
+    {
+        public override string Type => "refusal";
+        public string Refusal { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Image content block
+    /// </summary>
+    public class ImageContent : ContentBlock
+    {
+        public override string Type => "image";
+        public ImageSource Source { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Generic media content block for providers that support files, images, audio, or documents.
+    /// </summary>
+    public class MediaContent : ContentBlock
+    {
+        public override string Type => "media";
+        public string MediaType { get; set; } = string.Empty;
+        public MediaSource Source { get; set; } = new();
+    }
+
+    /// <summary>
+    /// A portable file/document input. Citation controls are translated only
+    /// on provider surfaces that expose the same document-citation semantics.
+    /// </summary>
+    public sealed class DocumentContent : MediaContent
+    {
+        public override string Type => "document";
+        public string? Title { get; set; }
+        public string? Context { get; set; }
+        public bool? CitationsEnabled { get; set; }
+    }
+
+    /// <summary>
+    /// A retrieved search result supplied as model input, distinct from a
+    /// provider-native tool result. Currently represented natively by Anthropic.
+    /// </summary>
+    public sealed class SearchResultContent : ContentBlock
+    {
+        public override string Type => "search_result";
+        public string Source { get; set; } = string.Empty;
+        public string Title { get; set; } = string.Empty;
+        public List<TextContent> Content { get; set; } = new();
+        public bool? CitationsEnabled { get; set; }
+    }
+
+    /// <summary>
+    /// Image source (base64 or URL)
+    /// </summary>
+    public class ImageSource
+    {
+        public string? MediaType { get; set; }
+        public string? Data { get; set; }  // Base64 encoded
+        public string? Url { get; set; }
+    }
+
+    /// <summary>
+    /// Media source for inline data, URLs, and provider-hosted files.
+    /// </summary>
+    public class MediaSource
+    {
+        public string? Url { get; set; }
+        public string? Base64Data { get; set; }
+        public string? FileId { get; set; }
+        public string? FileUri { get; set; }
+        public string? FileName { get; set; }
+    }
+
+    /// <summary>
+    /// Tool call content block (when model wants to call a tool)
+    /// </summary>
+    public class ToolCallContent : ContentBlock
+    {
+        public override string Type => "tool_call";
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public Dictionary<string, object> Input { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Tool result content block (response from tool execution)
+    /// </summary>
+    public class ToolResultContent : ContentBlock
+    {
+        public override string Type => "tool_result";
+        public string ToolCallId { get; set; } = string.Empty;
+        public string? ToolName { get; set; }
+        public object? Output { get; set; } = string.Empty;
+        public bool? IsError { get; set; }
+    }
+
+    /// <summary>
+    /// Observable invocation of a provider-native tool. Unlike a function call,
+    /// this does not imply that the application must execute it.
+    /// </summary>
+    public sealed class ProviderToolCallContent : ContentBlock
+    {
+        public override string Type => "provider_tool_call";
+        public string Id { get; set; } = string.Empty;
+        public string ToolId { get; set; } = string.Empty;
+        public ProviderToolCapability Capability { get; set; }
+        public string? Status { get; set; }
+        public object? Input { get; set; }
+    }
+
+    /// <summary>
+    /// Observable result of a provider-native tool execution.
+    /// </summary>
+    public sealed class ProviderToolResultContent : ContentBlock
+    {
+        public override string Type => "provider_tool_result";
+        public string ToolCallId { get; set; } = string.Empty;
+        public ProviderToolCapability Capability { get; set; }
+        public string? Status { get; set; }
+        public object? Output { get; set; }
+        public bool? IsError { get; set; }
+        public List<WebSource> Sources { get; set; } = new();
+        public string? SearchSuggestionsHtml { get; set; }
+    }
+
+    public sealed class WebSource
+    {
+        public string? SourceId { get; set; }
+        public string? Url { get; set; }
+        public string? Title { get; set; }
+        public string? Snippet { get; set; }
+        public string? SourceType { get; set; }
+        public string? ImageUrl { get; set; }
+        public string? ThumbnailUrl { get; set; }
+        public string? Caption { get; set; }
+        public string? PageAge { get; set; }
+    }
+
+    public sealed class Citation
+    {
+        /// <summary>Canonical span in the returned answer text, if supplied.</summary>
+        public AnswerTextSpan? AnswerSpan { get; set; }
+
+        /// <summary>Canonical links to one or more evidence sources.</summary>
+        public List<CitationSourceReference> Sources { get; set; } = new();
+
+        // Convenience projection retained for ordinary web/file citations.
+        public string? Url { get; set; }
+        public string? Title { get; set; }
+        public string? FileId { get; set; }
+        public string? FileName { get; set; }
+        public int? PageNumber { get; set; }
+        public int? StartIndex { get; set; }
+        public int? EndIndex { get; set; }
+        public string? CitedText { get; set; }
+        public SourceLocation? SourceLocation { get; set; }
+        public Dictionary<string, object>? ProviderMetadata { get; set; }
+        public ProviderNativeRepresentation? NativeRepresentation { get; set; }
+    }
+}

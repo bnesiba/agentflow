@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+    <Authors>Your Name</Authors>
+    <Description>A unified abstraction layer for OpenAI, Gemini, and Claude LLM APIs</Description>
+    <PackageProjectUrl>https://github.com/yourusername/llm-abstraction</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/yourusername/llm-abstraction</RepositoryUrl>
+    <PackageTags>llm;openai;claude;gemini;ai;abstraction;chatgpt</PackageTags>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>
