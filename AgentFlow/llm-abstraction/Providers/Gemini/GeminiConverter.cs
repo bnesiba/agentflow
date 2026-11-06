@@ -36,6 +36,8 @@ namespace LLMAbstraction.Providers.Gemini
                 request,
                 LLMProvider.Gemini,
                 LLMApiSurface.GeminiGenerateContent);
+            if (request.Continuation?.Provider == ProviderIds.Gemini)
+                throw new NotSupportedException("Interactions continuation requires the Interactions endpoint. Supply complete message history to switch endpoints.");
             var geminiRequest = new GeminiGenerateRequest
             {
                 Contents = ConvertMessages(request.Messages),
@@ -80,10 +82,10 @@ namespace LLMAbstraction.Providers.Gemini
             }
 
             if (request.ProviderOptions?.Gemini != null &&
-                request.ProviderOptions.Gemini.TryGetValue("safetySettings", out var safetySettings) &&
-                safetySettings is List<Dictionary<string, object>> typedSafetySettings)
+                request.ProviderOptions.Gemini.TryGetValue("safetySettings", out var safetySettings))
             {
-                geminiRequest.SafetySettings = typedSafetySettings;
+                geminiRequest.SafetySettings = JsonSerializer.Deserialize<List<Dictionary<string, object>>>(JsonSerializer.Serialize(safetySettings))
+                    ?? throw new ArgumentException("safetySettings must be an array.");
             }
 
             geminiRequest.AdditionalProperties = ProviderOptionMerger.ConvertAdditionalFields(
@@ -555,7 +557,11 @@ namespace LLMAbstraction.Providers.Gemini
                     !support.TryGetProperty("groundingChunkIndices", out var indices) ||
                     indices.ValueKind != JsonValueKind.Array)
                     continue;
-                var textBlockIndex = message.Content.IndexOf(text);
+                var partIndex = GetInt(segment, "partIndex") ?? 0;
+                if (partIndex < 0 || partIndex >= message.Content.Count || message.Content[partIndex] is not TextContent supportedText)
+                    continue;
+                text = supportedText;
+                var textBlockIndex = partIndex;
                 var grounding = new GroundingSupport
                 {
                     AnswerSpan = CreateAnswerSpan(segment, textBlockIndex),
@@ -599,7 +605,7 @@ namespace LLMAbstraction.Providers.Gemini
                     ContentBlockIndex = blockIndex,
                     StartIndex = start.Value,
                     EndIndex = end.Value,
-                    Unit = TextIndexUnit.ProviderDefined
+                    Unit = TextIndexUnit.Utf8Bytes
                 }
                 : null;
         }

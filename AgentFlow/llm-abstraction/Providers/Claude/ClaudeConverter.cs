@@ -115,9 +115,9 @@ namespace LLMAbstraction.Providers.Claude
                 },
                 Usage = new UsageInfo
                 {
-                    InputTokens = response.Usage.InputTokens,
+                    InputTokens = response.Usage.InputTokens + (response.Usage.CacheCreationInputTokens ?? 0) + (response.Usage.CacheReadInputTokens ?? 0),
                     OutputTokens = response.Usage.OutputTokens,
-                    TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens,
+                    TotalTokens = response.Usage.InputTokens + (response.Usage.CacheCreationInputTokens ?? 0) + (response.Usage.CacheReadInputTokens ?? 0) + response.Usage.OutputTokens,
                     CacheCreationTokens = response.Usage.CacheCreationInputTokens,
                     CacheWriteTokens = response.Usage.CacheCreationInputTokens,
                     CacheWrite5MinuteTokens = response.Usage.CacheCreation?.Ephemeral5mInputTokens ?? response.Usage.Ephemeral5mInputTokens,
@@ -473,19 +473,20 @@ namespace LLMAbstraction.Providers.Claude
 
             return toolChoice.Type switch
             {
-                ToolChoiceType.Auto => new { type = "auto" },
+                ToolChoiceType.Auto => new { type = "auto", disable_parallel_tool_use = toolChoice.DisableParallelToolUse },
                 ToolChoiceType.None => new { type = "none" },
-                ToolChoiceType.Required => new { type = "any" },
+                ToolChoiceType.Required => new { type = "any", disable_parallel_tool_use = toolChoice.DisableParallelToolUse },
                 ToolChoiceType.Specific => new
                 {
                     type = "tool",
+                    disable_parallel_tool_use = toolChoice.DisableParallelToolUse,
                     name = tools?.OfType<ProviderTool>().Any(tool =>
                         tool.Id == toolChoice.ToolName &&
                         tool.Capability == ProviderToolCapability.WebSearch) == true
                             ? "web_search"
                             : toolChoice.ToolName
                 },
-                _ => new { type = "auto" }
+                _ => new { type = "auto", disable_parallel_tool_use = toolChoice.DisableParallelToolUse }
             };
         }
 

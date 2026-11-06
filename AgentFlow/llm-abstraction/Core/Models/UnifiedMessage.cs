@@ -66,6 +66,12 @@ namespace LLMAbstraction.Core.Models
     /// <summary>
     /// An ordered provider-native content block with no portable equivalent.
     /// </summary>
+    public sealed class ReasoningSummaryContent : ContentBlock
+    {
+        public override string Type => "reasoning_summary";
+        public string Text { get; set; } = string.Empty;
+    }
+
     public sealed class ProviderNativeContent : ContentBlock
     {
         public override string Type => "provider_native";

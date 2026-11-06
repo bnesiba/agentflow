@@ -66,7 +66,8 @@ public sealed class StreamingToolCallTests
 
         var final = chunks.Last(chunk => chunk.FinishReason != null);
         Assert.Equal(FinishReason.ToolCalls, final.FinishReason);
-        Assert.Equal(11, final.Usage!.InputTokens);
+        Assert.Equal(14, final.Usage!.InputTokens);
+        Assert.Equal(31, final.Usage.TotalTokens);
         Assert.Equal(17, final.Usage.OutputTokens);
         Assert.Equal(3, final.Usage.CacheReadTokens);
         Assert.Collection(

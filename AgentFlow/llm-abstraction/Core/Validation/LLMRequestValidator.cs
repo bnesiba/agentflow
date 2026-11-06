@@ -794,10 +794,6 @@ namespace LLMAbstraction.Core.Validation
 
             if (provider == LLMProvider.Claude)
             {
-                AddErrorIf(diagnostics, request.ToolChoice?.DisableParallelToolUse != null,
-                    "claude.parallel_tool_control.unmapped",
-                    "Claude DisableParallelToolUse is not currently mapped by the converter.",
-                    "ToolChoice.DisableParallelToolUse");
                 AddErrorIf(diagnostics, request.Metadata?.Tags?.Count > 0,
                     "claude.metadata_tags.unsupported",
                     "Claude request metadata does not accept portable tags; only UserId is supported.",

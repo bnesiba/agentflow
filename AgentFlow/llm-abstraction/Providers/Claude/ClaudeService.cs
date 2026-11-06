@@ -219,16 +219,17 @@ namespace LLMAbstraction.Providers.Claude
             };
             var transportAttached = false;
 
+            var receivedTerminal = false;
             while (!reader.EndOfStream)
             {
-                var line = await reader.ReadLineAsync();
+                var line = await reader.ReadLineAsync(cancellationToken);
                 if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("event: ") && !line.StartsWith("data: "))
                     continue;
 
                 if (line.StartsWith("event: "))
                 {
                     var eventType = line.Substring(7);
-                    var dataLine = await reader.ReadLineAsync();
+                    var dataLine = await reader.ReadLineAsync(cancellationToken);
                     if (dataLine == null || !dataLine.StartsWith("data: "))
                         continue;
 
@@ -236,6 +237,8 @@ namespace LLMAbstraction.Providers.Claude
                     
                     switch (eventType)
                     {
+                        case "error":
+                            throw new InvalidOperationException("Claude streaming error: " + data);
                         case "message_start":
                             var messageStart = JsonSerializer.Deserialize<ClaudeMessageStart>(data, jsonOptions);
                             messageId = messageStart?.Message?.Id;
@@ -390,6 +393,7 @@ namespace LLMAbstraction.Providers.Claude
                             var messageDelta = JsonSerializer.Deserialize<ClaudeMessageDelta>(data, jsonOptions);
                             if (messageDelta?.Delta?.StopReason != null)
                             {
+                                receivedTerminal = true;
                                 finishReason = messageDelta.Delta.StopReason switch
                                 {
                                     "end_turn" => FinishReason.Stop,
@@ -419,6 +423,8 @@ namespace LLMAbstraction.Providers.Claude
                     }
                 }
             }
+            if (!receivedTerminal)
+                throw new IOException("Provider stream ended before a terminal event.");
         }
 
         private static UsageInfo? ConvertStreamingUsage(ClaudeUsage? initial, ClaudeUsage? final)
@@ -426,7 +432,7 @@ namespace LLMAbstraction.Providers.Claude
             if (initial == null && final == null)
                 return null;
 
-            var inputTokens = initial?.InputTokens ?? final?.InputTokens ?? 0;
+            var inputTokens = (initial?.InputTokens ?? final?.InputTokens ?? 0) + (initial?.CacheCreationInputTokens ?? final?.CacheCreationInputTokens ?? 0) + (initial?.CacheReadInputTokens ?? final?.CacheReadInputTokens ?? 0);
             var outputTokens = final?.OutputTokens ?? initial?.OutputTokens ?? 0;
             return new UsageInfo
             {

@@ -128,6 +128,15 @@ namespace LLMAbstraction.Providers.OpenAI
             {
                 switch (item.Type)
                 {
+                    case "reasoning":
+                        message.Content.Add(new ReasoningSummaryContent
+                        {
+                            Text = item.ExtensionData?.TryGetValue("summary", out var summary) == true && summary.ValueKind == JsonValueKind.Array
+                                ? string.Join("\n", summary.EnumerateArray().Where(part => part.TryGetProperty("text", out _)).Select(part => part.GetProperty("text").GetString()))
+                                : string.Empty,
+                            NativeRepresentation = ProviderNativeRepresentation.Create(ProviderIds.OpenAI, JsonSerializer.SerializeToElement(item, NativeJsonOptions))
+                        });
+                        break;
                     case "message":
                         AddMessageContent(message, item);
                         break;
@@ -533,13 +542,20 @@ namespace LLMAbstraction.Providers.OpenAI
 
         private static OpenAIResponseTool ConvertFunctionTool(FunctionTool tool)
         {
+            if (tool.Strict == true)
+            {
+                var errors = JsonSchemaAnalyzer.Analyze(new JsonSchemaDefinition { Schema = tool.Parameters })
+                    .Where(diagnostic => diagnostic.Severity == RequestDiagnosticSeverity.Error).ToList();
+                if (errors.Count > 0)
+                    throw new ArgumentException($"Strict tool '{tool.Name}' schema is invalid: " + string.Join(" ", errors.Select(error => error.Message)));
+            }
             return new OpenAIResponseTool
             {
                 Type = "function",
                 Name = tool.Name,
                 Description = tool.Description,
                 Parameters = tool.Parameters,
-                Strict = tool.Strict ?? true
+                Strict = tool.Strict ?? false
             };
         }
 

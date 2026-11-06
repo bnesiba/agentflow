@@ -311,13 +311,13 @@ namespace LLMAbstraction.Providers.Gemini
                 },
                 MediaContent media when media.Source.Base64Data != null => new Dictionary<string, object?>
                 {
-                    ["type"] = media.MediaType.StartsWith("image/", StringComparison.Ordinal) ? "image" : "document",
+                    ["type"] = media.MediaType.Split('/')[0] is "image" or "audio" or "video" ? media.MediaType.Split('/')[0] : "document",
                     ["mime_type"] = media.MediaType,
                     ["data"] = media.Source.Base64Data
                 },
                 MediaContent media when media.Source.FileUri != null => new Dictionary<string, object?>
                 {
-                    ["type"] = media.MediaType.StartsWith("image/", StringComparison.Ordinal) ? "image" : "document",
+                    ["type"] = media.MediaType.Split('/')[0] is "image" or "audio" or "video" ? media.MediaType.Split('/')[0] : "document",
                     ["mime_type"] = media.MediaType,
                     ["uri"] = media.Source.FileUri
                 },

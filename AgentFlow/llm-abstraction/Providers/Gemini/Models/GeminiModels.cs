@@ -9,6 +9,9 @@ namespace LLMAbstraction.Providers.Gemini.Models
     /// </summary>
     public class GeminiGenerateRequest
     {
+        [JsonPropertyName("model")]
+        public string? Model { get; set; }
+
         [JsonPropertyName("contents")]
         public List<GeminiContent> Contents { get; set; } = new();
 

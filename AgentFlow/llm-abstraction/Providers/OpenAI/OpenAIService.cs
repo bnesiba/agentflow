@@ -197,9 +197,10 @@ namespace LLMAbstraction.Providers.OpenAI
             var streamState = new OpenAIStreamState();
             var transportAttached = false;
 
+            var receivedTerminal = false;
             while (!reader.EndOfStream)
             {
-                var line = await reader.ReadLineAsync();
+                var line = await reader.ReadLineAsync(cancellationToken);
                 if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
                     continue;
 
@@ -222,6 +223,7 @@ namespace LLMAbstraction.Providers.OpenAI
                 if (streamEvent == null)
                     continue;
 
+                receivedTerminal |= streamEvent.Type is "response.completed" or "response.incomplete" or "response.failed";
                 var converted = ConvertStreamEvent(streamEvent, streamState);
                 if (converted != null)
                 {
@@ -233,6 +235,8 @@ namespace LLMAbstraction.Providers.OpenAI
                     yield return converted;
                 }
             }
+            if (!receivedTerminal)
+                throw new IOException("Provider stream ended before a terminal event.");
         }
 
         private static JsonSerializerOptions CreateJsonOptions()
@@ -297,7 +301,7 @@ namespace LLMAbstraction.Providers.OpenAI
                         {
                             Id = state.ResponseId,
                             Model = state.Model,
-                            ChoiceIndex = streamEvent.OutputIndex ?? 0,
+                            ChoiceIndex = 0,
                             Delta = new StreamDelta { ContentBlocks = searchMessage.Content }
                         };
                     }
@@ -310,7 +314,7 @@ namespace LLMAbstraction.Providers.OpenAI
                     {
                         Id = state.ResponseId,
                         Model = state.Model,
-                        ChoiceIndex = outputIndex,
+                        ChoiceIndex = 0,
                         Delta = new StreamDelta
                         {
                             ToolCalls = new List<ToolCallDelta>
@@ -328,12 +332,18 @@ namespace LLMAbstraction.Providers.OpenAI
                         }
                     };
 
+                case "response.reasoning_summary_text.delta":
+                    return new StreamChunk
+                    {
+                        Id = state.ResponseId, Model = state.Model, ChoiceIndex = 0,
+                        Delta = new StreamDelta { ContentBlocks = new List<ContentBlock> { new ReasoningSummaryContent { Text = streamEvent.Delta ?? string.Empty } } }
+                    };
                 case "response.output_text.delta":
                     return new StreamChunk
                     {
                         Id = state.ResponseId,
                         Model = state.Model,
-                        ChoiceIndex = streamEvent.OutputIndex ?? 0,
+                        ChoiceIndex = 0,
                         Delta = new StreamDelta
                         {
                             Content = streamEvent.Delta
@@ -346,7 +356,7 @@ namespace LLMAbstraction.Providers.OpenAI
                     {
                         Id = state.ResponseId,
                         Model = state.Model,
-                        ChoiceIndex = streamEvent.OutputIndex ?? 0,
+                        ChoiceIndex = 0,
                         Delta = new StreamDelta
                         {
                             ToolCalls = new List<ToolCallDelta>
@@ -371,7 +381,7 @@ namespace LLMAbstraction.Providers.OpenAI
                     {
                         Id = state.ResponseId,
                         Model = state.Model,
-                        ChoiceIndex = streamEvent.OutputIndex ?? 0,
+                        ChoiceIndex = 0,
                         Delta = new StreamDelta
                         {
                             ToolCalls = new List<ToolCallDelta>
@@ -403,7 +413,7 @@ namespace LLMAbstraction.Providers.OpenAI
                     {
                         Id = state.ResponseId,
                         Model = state.Model,
-                        ChoiceIndex = completedIndex,
+                        ChoiceIndex = 0,
                         Delta = new StreamDelta
                         {
                             ToolCalls = new List<ToolCallDelta>
@@ -441,6 +451,9 @@ namespace LLMAbstraction.Providers.OpenAI
                             ? _converter.ConvertResponse(streamEvent.Response).Choices[0].Message
                             : null
                     };
+
+                case "error":
+                    throw new InvalidOperationException("OpenAI streaming error: " + JsonSerializer.Serialize(streamEvent));
 
                 case "response.failed":
                     return new StreamChunk

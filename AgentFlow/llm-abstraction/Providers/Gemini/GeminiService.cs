@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -146,6 +147,7 @@ namespace LLMAbstraction.Providers.Gemini
                 GenerateContentRequest = _converter.ConvertRequest(request)
             };
             var jsonOptions = JsonOptions();
+            countRequest.GenerateContentRequest.Model = request.Model.StartsWith("models/") ? request.Model : $"models/{request.Model}";
             var jsonContent = JsonSerializer.Serialize(countRequest, jsonOptions);
             var endpoint = $"models/{request.Model}:countTokens";
             using var transportResponse = await _transport.SendAsync(
@@ -440,7 +442,7 @@ namespace LLMAbstraction.Providers.Gemini
 
             while (!reader.EndOfStream)
             {
-                var line = await reader.ReadLineAsync();
+                var line = await reader.ReadLineAsync(cancellationToken);
                 if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
                     continue;
 
@@ -680,6 +682,8 @@ namespace LLMAbstraction.Providers.Gemini
             using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var reader = new StreamReader(stream);
             var transportAttached = false;
+            var steps = new SortedDictionary<int, JsonObject>();
+            var argumentBuffers = new Dictionary<int, StringBuilder>();
             while (!reader.EndOfStream)
             {
                 var line = await reader.ReadLineAsync(cancellationToken);
@@ -705,6 +709,85 @@ namespace LLMAbstraction.Providers.Gemini
 
                 if (streamEvent.EventType == "error")
                     throw new InvalidOperationException($"Gemini Interactions stream failed: {streamEvent.Error}");
+
+                var stepIndex = streamEvent.Index ?? 0;
+                if (streamEvent.EventType == "step.start" && streamEvent.Step is JsonElement initialStep)
+                {
+                    steps[stepIndex] = JsonNode.Parse(initialStep.GetRawText())!.AsObject();
+                    if (GetString(initialStep, "type") == "function_call")
+                        argumentBuffers[stepIndex] = new StringBuilder();
+                    var initialContent = new List<ContentBlock>();
+                    GeminiInteractionsConverter.ProjectStep(initialStep, initialContent);
+                    if (initialContent.Any(block => block is TextContent or ToolCallContent))
+                    yield return AttachTransport(new StreamChunk
+                    {
+                        Model = request.Model,
+                        Delta = new StreamDelta
+                        {
+                            Content = string.Concat(initialContent.OfType<TextContent>().Select(text => text.Text)),
+                            ToolCalls = initialContent.OfType<ToolCallContent>().Select(call => new ToolCallDelta
+                            {
+                                Index = stepIndex, Id = call.Id, Name = call.Name, Type = "function"
+                            }).ToList()
+                        }
+                    }, transportResponse.Metadata, ref transportAttached);
+                }
+                if (streamEvent.EventType == "step.delta" && streamEvent.Delta is JsonElement stepDelta &&
+                    steps.TryGetValue(stepIndex, out var activeStep))
+                {
+                    var fragment = GetString(stepDelta, "arguments_delta") ?? GetString(stepDelta, "partial_arguments");
+                    if (fragment != null && argumentBuffers.TryGetValue(stepIndex, out var buffer))
+                    {
+                        buffer.Append(fragment);
+                        yield return AttachTransport(new StreamChunk
+                        {
+                            Model = request.Model,
+                            Delta = new StreamDelta
+                            {
+                                ToolCalls = new List<ToolCallDelta> { new()
+                                {
+                                    Index = stepIndex, Id = activeStep["id"]?.GetValue<string>(),
+                                    Name = activeStep["name"]?.GetValue<string>(), Arguments = fragment, Type = "function"
+                                }}
+                            }
+                        }, transportResponse.Metadata, ref transportAttached);
+                    }
+                    if (GetString(stepDelta, "type") == "text" && activeStep["content"] is JsonArray content)
+                    {
+                        var text = content.OfType<JsonObject>().LastOrDefault(part => part["type"]?.GetValue<string>() == "text");
+                        if (text == null) { text = new JsonObject { ["type"] = "text", ["text"] = "" }; content.Add(text); }
+                        text["text"] = (text["text"]?.GetValue<string>() ?? "") + GetString(stepDelta, "text");
+                    }
+                    if (GetString(stepDelta, "type") == "text_annotation_delta" &&
+                        activeStep["content"] is JsonArray annotatedContent &&
+                        annotatedContent.OfType<JsonObject>().LastOrDefault(part => part["type"]?.GetValue<string>() == "text") is JsonObject annotatedText &&
+                        stepDelta.TryGetProperty("annotation", out var annotation))
+                    {
+                        var annotations = annotatedText["annotations"] as JsonArray;
+                        if (annotations == null) { annotations = new JsonArray(); annotatedText["annotations"] = annotations; }
+                        annotations.Add(JsonNode.Parse(annotation.GetRawText()));
+                    }
+                    if (stepDelta.TryGetProperty("signature", out var signature))
+                        activeStep["signature"] = JsonNode.Parse(signature.GetRawText());
+                }
+                if (streamEvent.EventType == "step.stop" && steps.TryGetValue(stepIndex, out var finishedStep))
+                {
+                    if (streamEvent.Step is JsonElement fullStep)
+                        steps[stepIndex] = finishedStep = JsonNode.Parse(fullStep.GetRawText())!.AsObject();
+                    if (argumentBuffers.TryGetValue(stepIndex, out var argumentsBuffer) && argumentsBuffer.Length > 0)
+                        finishedStep["arguments"] = JsonNode.Parse(argumentsBuffer.ToString());
+                    if (finishedStep["type"]?.GetValue<string>() == "function_call")
+                        yield return AttachTransport(new StreamChunk
+                        {
+                            Model = request.Model,
+                            Delta = new StreamDelta { ToolCalls = new List<ToolCallDelta> { new()
+                            {
+                                Index = stepIndex, Id = finishedStep["id"]?.GetValue<string>(),
+                                Name = finishedStep["name"]?.GetValue<string>(),
+                                CompleteArguments = finishedStep["arguments"]?.ToJsonString(), IsComplete = true, Type = "function"
+                            } } }
+                        }, transportResponse.Metadata, ref transportAttached);
+                }
 
                 if (streamEvent.EventType is "step.start" or "step.stop" &&
                     streamEvent.Step is JsonElement step)
@@ -770,6 +853,8 @@ namespace LLMAbstraction.Providers.Gemini
 
                 if (streamEvent.EventType == "interaction.completed" && streamEvent.Interaction != null)
                 {
+                    if (streamEvent.Interaction.Steps.Count == 0)
+                        streamEvent.Interaction.Steps = steps.Values.Select(step => JsonSerializer.SerializeToElement(step)).ToList();
                     var completed = _interactionsConverter.ConvertResponse(streamEvent.Interaction);
                     if (nativeRequest.Store && completed.Continuation != null)
                     {
