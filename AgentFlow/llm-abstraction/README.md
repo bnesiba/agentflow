@@ -27,7 +27,7 @@ The portable subset covers text, images/files, custom function tools, provider-n
 | Search calls/results | Portable + native | Portable + native | Portable + native |
 | Citations/grounding | Portable + native | Portable + native | Portable + native |
 | Preflight input counting | Estimated | Exact | Exact on `generateContent`; estimated for Interactions |
-| Retries/rate-limit metadata | Supported | Supported | Supported; raw limits when undocumented |
+| Rate-limit metadata | Supported | Supported | Supported; raw limits when undocumented |
 
 Model capability data is advisory. Documented incompatibilities and unknown models produce warnings but do not block serialization, so new model names do not require a package update. Hard errors are reserved for API-shape settings that cannot be represented without dropping or changing the request.
 
@@ -52,7 +52,6 @@ var request = new UnifiedRequest
     Parameters = new GenerationParameters
     {
         MaxOutputTokens = 200,
-        Temperature = 0.4
     }
 };
 
@@ -177,7 +176,7 @@ See [PROVIDER_NATIVE_TOOLS.md](PROVIDER_NATIVE_TOOLS.md) for the complete archit
 
 See [MODEL_CAPABILITIES.md](MODEL_CAPABILITIES.md) for model/endpoint capability resolution, advisory warning behavior, reasoning mappings, and the portable JSON Schema contract.
 
-See [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md) for the prioritized plan covering model-aware reasoning/structured output, retries and rate limits, token counting, citations/grounding, prompt caching, embeddings, batch, and realtime.
+See [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md) for the prioritized plan covering model-aware reasoning/structured output, rate limits, token counting, citations/grounding, prompt caching, embeddings, batch, and realtime.
 
 Applications that display grounded answers remain responsible for rendering citations and every `AttributionArtifact` whose `DisplayRequired` value is true. Anthropic may return `FinishReason.Pause` during a long server-tool turn; continue by replaying the returned assistant message unchanged with the same tool definition.
 
@@ -342,7 +341,7 @@ Portable effort and summary intent work across providers where available. Non-eq
 - OpenAI: `OpenAIReasoningOptions` adds standard/pro mode, persisted context, and summary style.
 - Gemini: portable effort maps to `thinking_level`; `GeminiReasoningOptions.ThinkingBudget` is available only on the legacy `generateContent` surface.
 
-Gemini budget and level controls cannot be supplied together. Claude manual budgets and thinking/sampling combinations must satisfy API constraints. Model-specific mismatches produce warnings and are still sent.
+Gemini budget and level controls cannot be supplied together. Claude manual budgets and thinking/tool combinations must satisfy API constraints. Model-specific mismatches produce warnings and are still sent.
 
 ## Provider options
 
@@ -399,42 +398,15 @@ Capability profiles report the resolved family, recognition state, API surface, 
 
 ## Transport reliability and rate limits
 
-Generation, streaming, and token-count calls share one transport implementation. By default it retries up to three attempts for request timeouts, connection failures, HTTP 408/409/429, and 5xx responses. It honors provider `Retry-After` or reset hints, applies bounded exponential backoff with jitter, recreates each HTTP request, and never retries validation, authentication, or permission failures.
+Generation, streaming, token counting, and cache operations make one HTTP attempt. Recovery belongs to the calling application.
 
-```csharp
-using LLMAbstraction.Core.Transport;
+HTTP failures and provider error events raise `LLMApiException`, preserving provider codes, messages, request IDs, raw details. Connection failures, timeouts, malformed streams, and premature stream termination raise `LLMTransportException`. Caller cancellation remains `OperationCanceledException`.
 
-var service = LLMServiceFactory.CreateOpenAI(
-    "openai-key",
-    transport: new LLMTransportOptions
-    {
-        Retry = new RetryPolicy
-        {
-            MaximumAttempts = 4,
-            MaximumElapsedTime = TimeSpan.FromSeconds(45),
-            BaseDelay = TimeSpan.FromMilliseconds(250),
-            MaximumDelay = TimeSpan.FromSeconds(10)
-        },
-        AdmissionPolicy = myAdmissionPolicy,
-        RetryObserver = myRetryObserver
-    });
-```
+Both exception types expose `HasPartialOutput` and `HasToolCalls` for streaming failures. Previously delivered chunks remain with the caller. Token limits, refusals, and tool requests retain their finish reasons.
 
-`IRequestAdmissionPolicy` is an optional application-owned hook for local concurrency limits, distributed throttling, or budget admission. Its lease covers the whole logical request, including retries and streaming enumeration. The library does not impose a process-local limiter that would be misleading in distributed applications.
+`IRequestAdmissionPolicy` supports application-owned concurrency and budget admission. Its lease covers response processing and streaming enumeration. Configure it through `LLMTransportOptions.AdmissionPolicy`; a request can supply `RequestTransportOptions.EstimatedInputTokens`.
 
-One request may override retry behavior and provide a token estimate to admission control without changing the provider payload:
-
-```csharp
-request.Transport = new RequestTransportOptions
-{
-    Retry = new RetryPolicy { Enabled = false },
-    EstimatedInputTokens = 12_345
-};
-```
-
-`UnifiedResponse.Transport`, the first emitted `StreamChunk.Transport`, `TokenCountResult.Transport`, and structured exceptions expose request ID, every attempt, and the final response's normalized rate-limit snapshot. OpenAI request/token windows and Anthropic request/input/output/aggregate-token windows are normalized; all rate-limit and retry headers are also retained in `RateLimitSnapshot.RawHeaders`. Gemini does not currently document standard response limit headers, so any returned limit headers are preserved raw rather than assigned invented semantics.
-
-A stream is retried only while obtaining its initial HTTP response. Once the body is being parsed, malformed data, connection loss, or any other partial-stream failure is surfaced and the stream is never restarted, preventing duplicate visible output.
+Response transport metadata retains the single attempt, request ID, and provider rate-limit headers.
 
 ## Preflight token counting
 
@@ -531,7 +503,6 @@ catch (LLMApiException exception)
     Console.WriteLine(exception.ErrorType);
     Console.WriteLine(exception.Parameter);
     Console.WriteLine(exception.RequestId);
-    Console.WriteLine(exception.RetryAfter);
     Console.WriteLine(exception.IsTransient);
     Console.WriteLine(exception.Transport?.Attempts.Count);
 }
@@ -569,7 +540,7 @@ The `LLMAbstraction.Tests` project contains deterministic contract tests for:
 - Validation diagnostics
 - Provider option collision handling
 - Structured API errors
-- Retries, cancellation, admission leases, streaming retry boundaries, and rate-limit headers
+- Single-attempt failures, cancellation, admission leases, interrupted streams, and rate-limit headers
 - Provider token-count endpoint and request-shape parity
 - Evidence graph, typed citation locations, grouped grounding, citable input documents, and required attribution artifacts
 - Prompt-cache placement, TTL/order diagnostics, unknown-model warnings, usage accounting, token-count parity, endpoint routing, and Gemini resource lifecycle

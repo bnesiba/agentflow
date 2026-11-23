@@ -16,7 +16,6 @@ namespace LLMAbstraction.Core.Errors
             string? errorType,
             string? parameter,
             string? requestId,
-            TimeSpan? retryAfter,
             string rawResponse,
             JsonElement? details = null,
             TransportMetadata? transport = null)
@@ -27,20 +26,22 @@ namespace LLMAbstraction.Core.Errors
             ErrorType = errorType;
             Parameter = parameter;
             RequestId = requestId;
-            RetryAfter = retryAfter;
             RawResponse = rawResponse;
             Details = details?.Clone();
             Transport = transport;
             IsTransient = statusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.Conflict or
-                HttpStatusCode.TooManyRequests || (int)statusCode >= 500;
+                HttpStatusCode.TooManyRequests || (int)statusCode >= 500 ||
+                errorType is "overloaded_error" or "rate_limit_error" or "RESOURCE_EXHAUSTED" or "UNAVAILABLE";
         }
 
+        /// <summary>True when stream content was delivered before this failure.</summary>
+        public bool HasPartialOutput { get; internal set; }
+        public bool HasToolCalls { get; internal set; }
         public LLMProvider Provider { get; }
         public string? ErrorCode { get; }
         public string? ErrorType { get; }
         public string? Parameter { get; }
         public string? RequestId { get; }
-        public TimeSpan? RetryAfter { get; }
         public bool IsTransient { get; }
         public string RawResponse { get; }
         public JsonElement? Details { get; }

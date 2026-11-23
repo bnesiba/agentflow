@@ -21,7 +21,7 @@ public sealed class ProviderRequestContractTests
             Parameters = new GenerationParameters
             {
                 MaxOutputTokens = 4096,
-                TopP = 0.95,
+
                 StopSequences = new List<string> { "END" }
             },
             Reasoning = new ReasoningOptions
@@ -45,7 +45,7 @@ public sealed class ProviderRequestContractTests
         Assert.Equal(4096, Number(json, "max_tokens"));
         Assert.Equal("Be concise.", Text(json, "system"));
         Assert.Null(json["temperature"]); // incompatible with manual thinking
-        Assert.Equal(0.95, Double(json, "top_p"));
+        Assert.Null(json["top_p"]);
         Assert.Null(json["top_k"]); // incompatible with manual thinking
         Assert.Equal("enabled", Text(json["thinking"]!, "type"));
         Assert.Equal(1024, Number(json["thinking"]!, "budget_tokens"));

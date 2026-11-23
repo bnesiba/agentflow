@@ -392,7 +392,10 @@ namespace LLMAbstraction.Providers.Gemini
                 : $"{seconds:0.#########}s";
         }
 
-        public async IAsyncEnumerable<StreamChunk> StreamAsync(
+        public IAsyncEnumerable<StreamChunk> StreamAsync(UnifiedRequest request, CancellationToken cancellationToken = default) =>
+            ProviderStream.Observe(StreamCoreAsync(request, cancellationToken), LLMProvider.Gemini, cancellationToken);
+
+        private async IAsyncEnumerable<StreamChunk> StreamCoreAsync(
             UnifiedRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
@@ -440,13 +443,17 @@ namespace LLMAbstraction.Providers.Gemini
             var accumulatedMessages = new Dictionary<int, UnifiedMessage>();
             var transportAttached = false;
 
-            while (!reader.EndOfStream)
+            while (true)
             {
                 var line = await reader.ReadLineAsync(cancellationToken);
+                if (line == null) break;
                 if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
                     continue;
 
                 var data = line.Substring(6);
+                using (var document = JsonDocument.Parse(data))
+                    if (document.RootElement.TryGetProperty("error", out _))
+                        throw ProviderErrorParser.Create(LLMProvider.Gemini, response, data, transportResponse.Metadata);
                 GeminiStreamChunk? chunk;
                 try
                 {
@@ -644,6 +651,8 @@ namespace LLMAbstraction.Providers.Gemini
             if (interaction == null)
                 throw new InvalidOperationException("Failed to deserialize Gemini Interactions response");
 
+            if (interaction.Status is "failed" or "cancelled")
+                throw ProviderErrorParser.Create(LLMProvider.Gemini, response, responseJson, transportResponse.Metadata);
             var unified = _interactionsConverter.ConvertResponse(interaction);
             unified.Transport = transportResponse.Metadata;
             if (nativeRequest.Store && unified.Continuation != null)
@@ -684,9 +693,10 @@ namespace LLMAbstraction.Providers.Gemini
             var transportAttached = false;
             var steps = new SortedDictionary<int, JsonObject>();
             var argumentBuffers = new Dictionary<int, StringBuilder>();
-            while (!reader.EndOfStream)
+            while (true)
             {
                 var line = await reader.ReadLineAsync(cancellationToken);
+                if (line == null) break;
                 if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: ", StringComparison.Ordinal))
                     continue;
 
@@ -708,7 +718,7 @@ namespace LLMAbstraction.Providers.Gemini
                     continue;
 
                 if (streamEvent.EventType == "error")
-                    throw new InvalidOperationException($"Gemini Interactions stream failed: {streamEvent.Error}");
+                    throw ProviderErrorParser.Create(LLMProvider.Gemini, response, line.Substring(6), transportResponse.Metadata);
 
                 var stepIndex = streamEvent.Index ?? 0;
                 if (streamEvent.EventType == "step.start" && streamEvent.Step is JsonElement initialStep)
@@ -855,6 +865,8 @@ namespace LLMAbstraction.Providers.Gemini
                 {
                     if (streamEvent.Interaction.Steps.Count == 0)
                         streamEvent.Interaction.Steps = steps.Values.Select(step => JsonSerializer.SerializeToElement(step)).ToList();
+                    if (streamEvent.Interaction.Status is "failed" or "cancelled")
+                        throw ProviderErrorParser.Create(LLMProvider.Gemini, response, JsonSerializer.Serialize(streamEvent.Interaction), transportResponse.Metadata);
                     var completed = _interactionsConverter.ConvertResponse(streamEvent.Interaction);
                     if (nativeRequest.Store && completed.Continuation != null)
                     {
@@ -918,10 +930,7 @@ namespace LLMAbstraction.Providers.Gemini
 
         private static bool RequiresGenerateContent(UnifiedRequest request)
         {
-            return request.Parameters.Temperature != null ||
-                request.Parameters.TopP != null ||
-                request.Parameters.TopK != null ||
-                request.Reasoning?.Gemini?.ThinkingBudget != null ||
+            return request.Reasoning?.Gemini?.ThinkingBudget != null ||
                 !string.IsNullOrWhiteSpace(request.Cache?.Gemini?.CachedContentName) ||
                 request.Tools?.OfType<ProviderTool>().Any(tool =>
                 tool.Capability == ProviderToolCapability.WebSearch &&

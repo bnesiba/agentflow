@@ -44,9 +44,9 @@ namespace LLMAbstraction.Providers.Gemini
                 GenerationConfig = new GeminiGenerationConfig
                 {
                     MaxOutputTokens = request.Parameters.MaxOutputTokens,
-                    Temperature = request.Parameters.Temperature,
-                    TopP = request.Parameters.TopP,
-                    TopK = request.Parameters.TopK,
+
+
+
                     StopSequences = request.Parameters.StopSequences,
                     ThinkingConfig = ConvertReasoning(request.Reasoning)
                 },

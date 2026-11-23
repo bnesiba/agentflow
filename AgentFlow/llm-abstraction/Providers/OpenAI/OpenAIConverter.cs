@@ -19,7 +19,7 @@ namespace LLMAbstraction.Providers.OpenAI
         private static readonly HashSet<string> ProtectedRequestFields = new(StringComparer.Ordinal)
         {
             "model", "input", "previous_response_id", "instructions", "max_output_tokens",
-            "temperature", "top_p", "stream", "tools", "tool_choice", "parallel_tool_calls",
+             "stream", "tools", "tool_choice", "parallel_tool_calls",
             "text", "reasoning", "user", "metadata", "include", "prompt_cache_key",
             "prompt_cache_options", "prompt_cache_retention"
         };
@@ -44,8 +44,8 @@ namespace LLMAbstraction.Providers.OpenAI
                 Input = ConvertInput(request),
                 Instructions = UnifiedRequestNormalization.CombineInstructions(request),
                 MaxOutputTokens = request.Parameters.MaxOutputTokens,
-                Temperature = request.Parameters.Temperature,
-                TopP = request.Parameters.TopP,
+
+
                 Stream = request.Parameters.Stream,
                 User = request.Metadata?.UserId,
                 Metadata = request.Metadata?.Tags,

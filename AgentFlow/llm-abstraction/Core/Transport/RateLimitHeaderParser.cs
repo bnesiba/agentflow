@@ -32,8 +32,7 @@ namespace LLMAbstraction.Core.Transport
             var hasKnown = requests != null || tokens != null || input != null || output != null;
             var rawRateHeaders = headers
                 .Where(header =>
-                    header.Key.Contains("ratelimit", StringComparison.OrdinalIgnoreCase) ||
-                    header.Key.Equals("retry-after", StringComparison.OrdinalIgnoreCase))
+                    header.Key.Contains("ratelimit", StringComparison.OrdinalIgnoreCase))
                 .ToDictionary(header => header.Key, header => header.Value, StringComparer.OrdinalIgnoreCase);
 
             if (!hasKnown && rawRateHeaders.Count == 0)
@@ -52,26 +51,6 @@ namespace LLMAbstraction.Core.Transport
             Get(response, "request-id") ??
             Get(response, "x-request-id") ??
             Get(response, "x-goog-request-id");
-
-        public static TimeSpan? GetServerDelay(HttpResponseMessage response, DateTimeOffset now)
-        {
-            if (response.Headers.RetryAfter?.Delta is TimeSpan delta)
-                return NonNegative(delta);
-            if (response.Headers.RetryAfter?.Date is DateTimeOffset date)
-                return NonNegative(date - now);
-
-            foreach (var name in new[]
-                     {
-                         "anthropic-ratelimit-requests-reset",
-                         "x-ratelimit-reset-requests",
-                         "x-ratelimit-reset-tokens"
-                     })
-            {
-                if (Get(response, name) is string value && TryParseReset(value, now, out var reset))
-                    return reset;
-            }
-            return null;
-        }
 
         private static RateLimitWindow? ParseWindow(
             IReadOnlyDictionary<string, string[]> headers,

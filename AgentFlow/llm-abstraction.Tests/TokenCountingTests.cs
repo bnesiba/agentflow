@@ -27,8 +27,8 @@ public sealed class TokenCountingTests
         request.Parameters = new GenerationParameters
         {
             MaxOutputTokens = 512,
-            Temperature = 0.4,
-            TopP = 0.9,
+
+
             Stream = true
         };
         request.Reasoning = new ReasoningOptions
@@ -71,7 +71,7 @@ public sealed class TokenCountingTests
         request.Parameters = new GenerationParameters
         {
             MaxOutputTokens = 1024,
-            TopP = 0.95,
+
             StopSequences = new List<string> { "END" },
             Stream = true
         };

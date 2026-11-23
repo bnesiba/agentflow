@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using LLMAbstraction.Core;
 using LLMAbstraction.Core.Interfaces;
+using LLMAbstraction.Core.Errors;
 using LLMAbstraction.Core.Models;
 
 namespace LLMAbstraction.ConsoleExample
@@ -42,32 +43,39 @@ namespace LLMAbstraction.ConsoleExample
                 if (string.IsNullOrEmpty(userInput) || userInput.ToLower() == "quit")
                     break;
 
-                // Add user message
-                messages.Add(new UnifiedMessage(MessageRole.User, userInput));
+                var userMessage = new UnifiedMessage(MessageRole.User, userInput);
 
                 // Create request
                 var request = new UnifiedRequest
                 {
                     Model = model,
-                    Messages = messages,
+                    Messages = new List<UnifiedMessage>(messages) { userMessage },
                     Instructions = "You are a helpful assistant.",
                     Parameters = new GenerationParameters
                     {
-                        MaxOutputTokens = 500,
-                        Temperature = 0.7
+                        MaxOutputTokens = 500
                     }
                 };
 
+                using var cancellation = new CancellationTokenSource();
+                ConsoleCancelEventHandler cancelRequest = (_, eventArgs) =>
+                {
+                    eventArgs.Cancel = true;
+                    cancellation.Cancel();
+                };
+                Console.CancelKeyPress += cancelRequest;
+                Console.WriteLine("Generating response. Press Ctrl+C to cancel this request.");
                 try
                 {
                     // Generate response
-                    var response = await service.GenerateAsync(request);
+                    var response = await service.GenerateAsync(request, cancellation.Token);
                     if (response.Choices.Count == 0)
                     {
                         Console.WriteLine("\nAssistant returned no choices.\n");
                         continue;
                     }
 
+                    messages.Add(userMessage);
                     var choice = response.Choices[0];
                     var textContent = GetTextContent(choice.Message);
 
@@ -86,9 +94,28 @@ namespace LLMAbstraction.ConsoleExample
                         messages.Add(choice.Message);
                     }
                 }
+                catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+                {
+                    Console.WriteLine("\nRequest cancelled.\n");
+                }
+                catch (LLMApiException ex)
+                {
+                    Console.WriteLine($"\n{ex.Provider} API error ({ex.ErrorCode ?? ex.ErrorType ?? ex.StatusCode?.ToString()}): {ex.Message}");
+                    if (ex.RequestId != null)
+                        Console.WriteLine($"Request ID: {ex.RequestId}");
+                    Console.WriteLine();
+                }
+                catch (LLMTransportException ex)
+                {
+                    Console.WriteLine($"\n{ex.Provider} connection or response error: {ex.Message}\n");
+                }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"\nError: {ex.Message}\n");
+                }
+                finally
+                {
+                    Console.CancelKeyPress -= cancelRequest;
                 }
             }
 
@@ -153,9 +180,9 @@ namespace LLMAbstraction.ConsoleExample
         {
             return provider switch
             {
-                LLMProvider.OpenAI => "gpt-5-mini",
-                LLMProvider.Claude => "claude-sonnet-4-20250514",
-                LLMProvider.Gemini => "gemini-2.5-flash",
+                LLMProvider.OpenAI => "gpt-6-luna",
+                LLMProvider.Claude => "claude-haiku-5-5",
+                LLMProvider.Gemini => "gemini-4-hydrogen",
                 _ => throw new ArgumentException($"Unknown provider: {provider}")
             };
         }

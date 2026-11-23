@@ -29,7 +29,7 @@ namespace LLMAbstraction.Examples
                 Parameters = new GenerationParameters
                 {
                     MaxOutputTokens = 200,
-                    Temperature = 0.7
+
                 },
                 Output = new OutputFormat
                 {
@@ -98,7 +98,7 @@ namespace LLMAbstraction.Examples
                 Parameters = new GenerationParameters
                 {
                     MaxOutputTokens = 300,
-                    Temperature = 0.7
+
                 },
                 Output = new OutputFormat
                 {
@@ -137,7 +137,7 @@ namespace LLMAbstraction.Examples
                 Parameters = new GenerationParameters
                 {
                     MaxOutputTokens = 200,
-                    Temperature = 0.8
+
                 }
             };
 
@@ -178,7 +178,7 @@ namespace LLMAbstraction.Examples
                 Parameters = new GenerationParameters
                 {
                     MaxOutputTokens = 500,
-                    Temperature = 0.7
+
                 }
             };
 
@@ -214,7 +214,7 @@ namespace LLMAbstraction.Examples
                 Parameters = new GenerationParameters
                 {
                     MaxOutputTokens = 500,
-                    Temperature = 0.5
+
                 },
                 Output = new OutputFormat
                 {
@@ -297,7 +297,7 @@ namespace LLMAbstraction.Examples
                 Parameters = new GenerationParameters
                 {
                     MaxOutputTokens = 1000,
-                    Temperature = 0.7
+
                 },
                 Output = new OutputFormat
                 {

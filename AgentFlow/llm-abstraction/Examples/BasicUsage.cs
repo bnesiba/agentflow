@@ -31,7 +31,7 @@ namespace LLMAbstraction.Examples
                 Parameters = new GenerationParameters
                 {
                     MaxOutputTokens = 100,
-                    Temperature = 0.7
+
                 }
             };
 
@@ -65,7 +65,7 @@ namespace LLMAbstraction.Examples
                 Parameters = new GenerationParameters
                 {
                     MaxOutputTokens = 150,
-                    Temperature = 0.8
+
                 }
             };
 
@@ -90,7 +90,7 @@ namespace LLMAbstraction.Examples
                 Parameters = new GenerationParameters
                 {
                     MaxOutputTokens = 100,
-                    Temperature = 0.5
+
                 }
             };
 

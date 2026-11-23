@@ -19,6 +19,9 @@ namespace LLMAbstraction.Core.Errors
             Transport = transport;
         }
 
+        /// <summary>True when stream content was delivered before this failure.</summary>
+        public bool HasPartialOutput { get; internal set; }
+        public bool HasToolCalls { get; internal set; }
         public LLMProvider Provider { get; }
         public bool IsTransient { get; }
         public TransportMetadata Transport { get; }

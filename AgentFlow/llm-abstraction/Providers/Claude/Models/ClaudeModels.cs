@@ -24,14 +24,8 @@ namespace LLMAbstraction.Providers.Claude.Models
         [JsonPropertyName("cache_control")]
         public ClaudeCacheControl? CacheControl { get; set; }
 
-        [JsonPropertyName("temperature")]
-        public double? Temperature { get; set; }
 
-        [JsonPropertyName("top_p")]
-        public double? TopP { get; set; }
 
-        [JsonPropertyName("top_k")]
-        public int? TopK { get; set; }
 
         [JsonPropertyName("stop_sequences")]
         public List<string>? StopSequences { get; set; }

@@ -13,7 +13,7 @@ namespace LLMAbstraction.Tests;
 public sealed class ErrorHandlingTests
 {
     [Fact]
-    public async Task OpenAIErrorRetainsStructuredFieldsHeadersAndRetryability()
+    public async Task OpenAIErrorRetainsStructuredFieldsAndHeaders()
     {
         const string body = """
         {"error":{"message":"Rate limit reached","type":"rate_limit_error","param":"model","code":"rate_limit_exceeded"}}
@@ -21,9 +21,8 @@ public sealed class ErrorHandlingTests
         using var client = Client(body, HttpStatusCode.TooManyRequests, new Dictionary<string, string>
         {
             ["x-request-id"] = "req_openai",
-            ["retry-after"] = "5"
         });
-        var service = new OpenAIService(client, "key", transportOptions: NoRetries());
+        var service = new OpenAIService(client, "key");
 
         var error = await Assert.ThrowsAsync<LLMApiException>(
             () => service.GenerateAsync(Request("gpt-5.6")));
@@ -34,7 +33,6 @@ public sealed class ErrorHandlingTests
         Assert.Equal("rate_limit_error", error.ErrorType);
         Assert.Equal("model", error.Parameter);
         Assert.Equal("req_openai", error.RequestId);
-        Assert.Equal(TimeSpan.FromSeconds(5), error.RetryAfter);
         Assert.True(error.IsTransient);
         Assert.Contains("Rate limit reached", error.Message);
         Assert.IsAssignableFrom<HttpRequestException>(error);
@@ -84,7 +82,7 @@ public sealed class ErrorHandlingTests
     public async Task NonJsonProxyErrorIsStillStructuredAndPreservesRawBody()
     {
         using var client = Client("upstream unavailable", HttpStatusCode.BadGateway);
-        var service = new OpenAIService(client, "key", transportOptions: NoRetries());
+        var service = new OpenAIService(client, "key");
 
         var error = await Assert.ThrowsAsync<LLMApiException>(
             () => service.GenerateAsync(Request("gpt-5.6")));
@@ -100,10 +98,6 @@ public sealed class ErrorHandlingTests
         Messages = { new UnifiedMessage(MessageRole.User, "Hello") }
     };
 
-    private static LLMTransportOptions NoRetries() => new()
-    {
-        Retry = new RetryPolicy { Enabled = false }
-    };
 
     private static HttpClient Client(
         string body,

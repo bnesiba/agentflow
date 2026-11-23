@@ -24,11 +24,7 @@ namespace LLMAbstraction.Providers.OpenAI.Models
         [JsonPropertyName("max_output_tokens")]
         public int? MaxOutputTokens { get; set; }
 
-        [JsonPropertyName("temperature")]
-        public double? Temperature { get; set; }
 
-        [JsonPropertyName("top_p")]
-        public double? TopP { get; set; }
 
         [JsonPropertyName("stream")]
         public bool Stream { get; set; }

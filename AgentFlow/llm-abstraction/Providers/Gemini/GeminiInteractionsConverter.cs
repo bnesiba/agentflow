@@ -370,9 +370,6 @@ namespace LLMAbstraction.Providers.Gemini
         {
             var config = new Dictionary<string, object>();
             Add(config, "max_output_tokens", request.Parameters.MaxOutputTokens);
-            Add(config, "temperature", request.Parameters.Temperature);
-            Add(config, "top_p", request.Parameters.TopP);
-            Add(config, "top_k", request.Parameters.TopK);
             Add(config, "stop_sequences", request.Parameters.StopSequences);
             Add(config, "thinking_level", request.Reasoning?.Effort == null
                 ? null

@@ -108,6 +108,8 @@ namespace LLMAbstraction.Providers.OpenAI
                 throw new InvalidOperationException("Failed to deserialize OpenAI response");
             }
 
+            if (openAIResponse.Status == "failed")
+                throw ProviderErrorParser.Create(LLMProvider.OpenAI, response, responseJson, transportResponse.Metadata);
             var converted = _converter.ConvertResponse(openAIResponse);
             converted.Transport = transportResponse.Metadata;
             return converted;
@@ -161,7 +163,10 @@ namespace LLMAbstraction.Providers.OpenAI
             };
         }
 
-        public async IAsyncEnumerable<StreamChunk> StreamAsync(
+        public IAsyncEnumerable<StreamChunk> StreamAsync(UnifiedRequest request, CancellationToken cancellationToken = default) =>
+            ProviderStream.Observe(StreamCoreAsync(request, cancellationToken), LLMProvider.OpenAI, cancellationToken);
+
+        private async IAsyncEnumerable<StreamChunk> StreamCoreAsync(
             UnifiedRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
@@ -198,9 +203,10 @@ namespace LLMAbstraction.Providers.OpenAI
             var transportAttached = false;
 
             var receivedTerminal = false;
-            while (!reader.EndOfStream)
+            while (true)
             {
                 var line = await reader.ReadLineAsync(cancellationToken);
+                if (line == null) break;
                 if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
                     continue;
 
@@ -223,6 +229,8 @@ namespace LLMAbstraction.Providers.OpenAI
                 if (streamEvent == null)
                     continue;
 
+                if (streamEvent.Type is "error" or "response.failed")
+                    throw ProviderErrorParser.Create(LLMProvider.OpenAI, response, data, transportResponse.Metadata);
                 receivedTerminal |= streamEvent.Type is "response.completed" or "response.incomplete" or "response.failed";
                 var converted = ConvertStreamEvent(streamEvent, streamState);
                 if (converted != null)

@@ -272,7 +272,7 @@ public sealed class StreamingToolCallTests
             BaseAddress = new Uri("https://api.openai.com/v1/")
         };
         var openAI = new OpenAIService(openAIClient, "key");
-        var openAIError = await Assert.ThrowsAsync<InvalidOperationException>(
+        var openAIError = await Assert.ThrowsAsync<LLMAbstraction.Core.Errors.LLMTransportException>(
             () => CollectAsync(openAI.StreamAsync(new UnifiedRequest
             {
                 Model = "gpt-5.6",
@@ -285,7 +285,7 @@ public sealed class StreamingToolCallTests
             BaseAddress = new Uri("https://generativelanguage.googleapis.com/v1beta/")
         };
         var gemini = new GeminiService(geminiClient, "key");
-        var geminiError = await Assert.ThrowsAsync<InvalidOperationException>(
+        var geminiError = await Assert.ThrowsAsync<LLMAbstraction.Core.Errors.LLMTransportException>(
             () => CollectAsync(gemini.StreamAsync(new UnifiedRequest
             {
                 Model = "gemini-3.5-flash",

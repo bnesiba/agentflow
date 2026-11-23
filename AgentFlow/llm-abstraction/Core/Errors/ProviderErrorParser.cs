@@ -24,6 +24,8 @@ namespace LLMAbstraction.Core.Errors
             {
                 using var document = JsonDocument.Parse(rawResponse);
                 var root = document.RootElement;
+                if (root.TryGetProperty("response", out var nested) && nested.ValueKind == JsonValueKind.Object)
+                    root = nested;
                 if (root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
                 {
                     message = GetString(error, "message");
@@ -34,6 +36,8 @@ namespace LLMAbstraction.Core.Errors
                         details = errorDetails.Clone();
                 }
 
+                code ??= GetFlexibleString(root, "code");
+                parameter ??= GetString(root, "param");
                 type ??= GetString(root, "type");
                 message ??= GetString(root, "message");
             }
@@ -55,7 +59,6 @@ namespace LLMAbstraction.Core.Errors
                 type,
                 parameter,
                 requestId,
-                GetRetryAfter(response),
                 rawResponse,
                 details,
                 transport);
@@ -82,16 +85,5 @@ namespace LLMAbstraction.Core.Errors
                 : null;
         }
 
-        private static TimeSpan? GetRetryAfter(HttpResponseMessage response)
-        {
-            if (response.Headers.RetryAfter?.Delta != null)
-                return response.Headers.RetryAfter.Delta;
-            if (response.Headers.RetryAfter?.Date != null)
-            {
-                var difference = response.Headers.RetryAfter.Date.Value - DateTimeOffset.UtcNow;
-                return difference > TimeSpan.Zero ? difference : TimeSpan.Zero;
-            }
-            return null;
-        }
     }
 }

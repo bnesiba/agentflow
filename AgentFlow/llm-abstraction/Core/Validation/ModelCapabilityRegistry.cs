@@ -49,9 +49,6 @@ namespace LLMAbstraction.Core.Validation
         public CapabilitySupport AnthropicManualThinking { get; init; }
         public CapabilitySupport OpenAIProMode { get; init; }
         public CapabilitySupport OpenAIReasoningContext { get; init; }
-        public CapabilitySupport SamplingControls { get; init; } = CapabilitySupport.Supported;
-        public double MinimumTemperature { get; init; }
-        public double MaximumTemperature { get; init; }
         public IReadOnlySet<ReasoningEffort> ReasoningEfforts { get; init; } =
             new HashSet<ReasoningEffort>();
     }
@@ -115,9 +112,7 @@ namespace LLMAbstraction.Core.Validation
                     reasoning: CapabilitySupport.Supported,
                     efforts: ClaudeModernEfforts,
                     adaptive: CapabilitySupport.Supported,
-                    manual: CapabilitySupport.Unsupported,
-                    sampling: CapabilitySupport.Unsupported,
-                    maxTemperature: 1);
+                    manual: CapabilitySupport.Unsupported);
             }
 
             if (StartsWith(model, "claude-sonnet-4-6") || StartsWith(model, "claude-opus-4-6"))
@@ -128,9 +123,7 @@ namespace LLMAbstraction.Core.Validation
                     reasoning: CapabilitySupport.Supported,
                     efforts: ClaudeModernEfforts,
                     adaptive: CapabilitySupport.Supported,
-                    manual: CapabilitySupport.Supported,
-                    sampling: CapabilitySupport.Supported,
-                    maxTemperature: 1);
+                    manual: CapabilitySupport.Supported);
             }
 
             if (StartsWith(model, "claude-opus-4-8") || StartsWith(model, "claude-opus-4-7"))
@@ -141,12 +134,10 @@ namespace LLMAbstraction.Core.Validation
                     reasoning: CapabilitySupport.Supported,
                     efforts: ClaudeModernEfforts,
                     adaptive: CapabilitySupport.Supported,
-                    manual: CapabilitySupport.Unsupported,
-                    sampling: CapabilitySupport.Supported,
-                    maxTemperature: 1);
+                    manual: CapabilitySupport.Unsupported);
             }
 
-            return Unknown(LLMProvider.Claude, surface, model, maxTemperature: 1);
+            return Unknown(LLMProvider.Claude, surface, model);
         }
 
         private static ModelCapabilityProfile ResolveOpenAI(string model, LLMApiSurface surface)
@@ -158,8 +149,7 @@ namespace LLMAbstraction.Core.Validation
                     reasoning: CapabilitySupport.Supported,
                     efforts: OpenAI56Efforts,
                     pro: CapabilitySupport.Supported,
-                    context: CapabilitySupport.Supported,
-                    maxTemperature: 2);
+                    context: CapabilitySupport.Supported);
             }
 
             if (StartsWith(model, "gpt-5.4-pro"))
@@ -167,8 +157,7 @@ namespace LLMAbstraction.Core.Validation
                 return Known(LLMProvider.OpenAI, surface, model, "gpt-5.4-pro",
                     structured: CapabilitySupport.Unsupported,
                     reasoning: CapabilitySupport.Supported,
-                    efforts: Set(ReasoningEffort.Medium, ReasoningEffort.High, ReasoningEffort.XHigh),
-                    maxTemperature: 2);
+                    efforts: Set(ReasoningEffort.Medium, ReasoningEffort.High, ReasoningEffort.XHigh));
             }
 
             if (StartsWith(model, "gpt-5.5") || StartsWith(model, "gpt-5.4"))
@@ -177,8 +166,7 @@ namespace LLMAbstraction.Core.Validation
                     structured: CapabilitySupport.Supported,
                     reasoning: CapabilitySupport.Supported,
                     efforts: Set(ReasoningEffort.None, ReasoningEffort.Low, ReasoningEffort.Medium,
-                        ReasoningEffort.High, ReasoningEffort.XHigh),
-                    maxTemperature: 2);
+                        ReasoningEffort.High, ReasoningEffort.XHigh));
             }
 
             if (StartsWith(model, "gpt-4.1") || StartsWith(model, "gpt-4o"))
@@ -186,11 +174,10 @@ namespace LLMAbstraction.Core.Validation
                 return Known(LLMProvider.OpenAI, surface, model, "gpt-4-class",
                     structured: CapabilitySupport.Supported,
                     reasoning: CapabilitySupport.Unsupported,
-                    efforts: Set(),
-                    maxTemperature: 2);
+                    efforts: Set());
             }
 
-            return Unknown(LLMProvider.OpenAI, surface, model, maxTemperature: 2);
+            return Unknown(LLMProvider.OpenAI, surface, model);
         }
 
         private static ModelCapabilityProfile ResolveGemini(string model, LLMApiSurface surface)
@@ -229,7 +216,7 @@ namespace LLMAbstraction.Core.Validation
                         : CapabilitySupport.Unsupported);
             }
 
-            return Unknown(LLMProvider.Gemini, surface, model, maxTemperature: 2);
+            return Unknown(LLMProvider.Gemini, surface, model);
         }
 
         private static ModelCapabilityProfile GeminiKnown(
@@ -240,8 +227,7 @@ namespace LLMAbstraction.Core.Validation
             Known(LLMProvider.Gemini, surface, model, family,
                 structured: CapabilitySupport.Supported,
                 reasoning: CapabilitySupport.Supported,
-                efforts: efforts,
-                maxTemperature: 2);
+                efforts: efforts);
 
         private static ModelCapabilityProfile Known(
             LLMProvider provider,
@@ -255,9 +241,7 @@ namespace LLMAbstraction.Core.Validation
             CapabilitySupport adaptive = CapabilitySupport.Unsupported,
             CapabilitySupport manual = CapabilitySupport.Unsupported,
             CapabilitySupport pro = CapabilitySupport.Unsupported,
-            CapabilitySupport context = CapabilitySupport.Unsupported,
-            CapabilitySupport sampling = CapabilitySupport.Supported,
-            double maxTemperature = 2) => new()
+            CapabilitySupport context = CapabilitySupport.Unsupported) => new()
         {
             Provider = provider,
             Surface = surface,
@@ -272,17 +256,13 @@ namespace LLMAbstraction.Core.Validation
             AnthropicManualThinking = manual,
             OpenAIProMode = pro,
             OpenAIReasoningContext = context,
-            SamplingControls = sampling,
-            MinimumTemperature = 0,
-            MaximumTemperature = maxTemperature,
             ReasoningEfforts = efforts
         };
 
         private static ModelCapabilityProfile Unknown(
             LLMProvider provider,
             LLMApiSurface surface,
-            string model,
-            double maxTemperature) => new()
+            string model) => new()
         {
             Provider = provider,
             Surface = surface,
@@ -297,9 +277,6 @@ namespace LLMAbstraction.Core.Validation
             AnthropicManualThinking = CapabilitySupport.Unknown,
             OpenAIProMode = CapabilitySupport.Unknown,
             OpenAIReasoningContext = CapabilitySupport.Unknown,
-            SamplingControls = CapabilitySupport.Unknown,
-            MinimumTemperature = 0,
-            MaximumTemperature = maxTemperature
         };
 
         private static ModelCapabilityProfile CopyWithBudget(
@@ -319,9 +296,6 @@ namespace LLMAbstraction.Core.Validation
             AnthropicManualThinking = source.AnthropicManualThinking,
             OpenAIProMode = source.OpenAIProMode,
             OpenAIReasoningContext = source.OpenAIReasoningContext,
-            SamplingControls = source.SamplingControls,
-            MinimumTemperature = source.MinimumTemperature,
-            MaximumTemperature = source.MaximumTemperature,
             ReasoningEfforts = source.ReasoningEfforts
         };
 

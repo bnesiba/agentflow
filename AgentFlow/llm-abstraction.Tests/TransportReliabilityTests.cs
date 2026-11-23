@@ -12,131 +12,84 @@ namespace LLMAbstraction.Tests;
 public sealed class TransportReliabilityTests
 {
     [Fact]
-    public async Task TransientStatusIsRetriedWithServerDelayAndAttemptMetadata()
+    public async Task RateLimitErrorPreservesProviderMessage()
     {
-        var handler = new SequenceHandler(
-            _ => Response(HttpStatusCode.TooManyRequests, """{"error":{"message":"slow down"}}""",
-                ("retry-after", "5")),
-            _ => Response(HttpStatusCode.OK, SuccessfulResponse,
-                ("x-request-id", "req_success"),
-                ("x-ratelimit-limit-requests", "100"),
-                ("x-ratelimit-remaining-requests", "99"),
-                ("x-ratelimit-reset-requests", "2s")));
-        var delay = new RecordingDelayScheduler();
-        var observer = new RecordingRetryObserver();
+        var handler = new SequenceHandler(_ => Response(HttpStatusCode.TooManyRequests,
+            """{"error":{"message":"slow down"}}"""));
         using var client = Client(handler);
-        var service = new OpenAIService(client, "key", transportOptions: Options(delay, observer));
-
-        var response = await service.GenerateAsync(Request());
-
-        Assert.Equal(2, handler.CallCount);
-        Assert.Equal(TimeSpan.FromSeconds(5), Assert.Single(delay.Delays));
-        Assert.Equal(TimeSpan.FromSeconds(5), Assert.Single(observer.Contexts).Attempt.ServerDelay);
-        Assert.Equal("req_success", response.Transport!.RequestId);
-        Assert.Collection(response.Transport.Attempts,
-            first =>
-            {
-                Assert.Equal(HttpStatusCode.TooManyRequests, first.StatusCode);
-                Assert.True(first.WillRetry);
-            },
-            second =>
-            {
-                Assert.Equal(HttpStatusCode.OK, second.StatusCode);
-                Assert.False(second.WillRetry);
-            });
-        Assert.Equal(100, response.Transport.RateLimits!.Requests!.Limit);
-        Assert.Equal(99, response.Transport.RateLimits.Requests.Remaining);
-        Assert.Equal(TimeSpan.FromSeconds(2), response.Transport.RateLimits.Requests.ResetsAfter);
+        var service = new OpenAIService(client, "key");
+        var error = await Assert.ThrowsAsync<LLMApiException>(() => service.GenerateAsync(Request()));
+        Assert.Equal(1, handler.CallCount);
     }
 
     [Fact]
-    public async Task NonTransientStatusIsNeverRetried()
+    public async Task NonTransientStatusIsSentOnce()
     {
         var handler = new SequenceHandler(
             _ => Response(HttpStatusCode.BadRequest,
                 """{"error":{"message":"bad request","type":"invalid_request_error"}}"""));
-        var delay = new RecordingDelayScheduler();
         using var client = Client(handler);
-        var service = new OpenAIService(client, "key", transportOptions: Options(delay));
+        var service = new OpenAIService(client, "key");
 
         var exception = await Assert.ThrowsAsync<LLMApiException>(
             () => service.GenerateAsync(Request()));
 
         Assert.Equal(1, handler.CallCount);
-        Assert.Empty(delay.Delays);
         Assert.Single(exception.Transport!.Attempts);
-        Assert.False(exception.Transport.Attempts[0].WillRetry);
     }
 
     [Fact]
-    public async Task ExhaustedTransientResponsesRetainEveryAttempt()
+    public async Task TransientResponseRecordsOneAttempt()
     {
         var handler = new SequenceHandler(
             _ => Response(HttpStatusCode.ServiceUnavailable, "unavailable"),
             _ => Response(HttpStatusCode.ServiceUnavailable, "unavailable"),
             _ => Response(HttpStatusCode.ServiceUnavailable, "unavailable"));
-        var delay = new RecordingDelayScheduler();
         using var client = Client(handler);
-        var service = new OpenAIService(client, "key", transportOptions: Options(delay));
+        var service = new OpenAIService(client, "key");
 
         var exception = await Assert.ThrowsAsync<LLMApiException>(
             () => service.GenerateAsync(Request()));
 
-        Assert.Equal(3, handler.CallCount);
-        Assert.Equal(2, delay.Delays.Count);
-        Assert.Equal(3, exception.Transport!.Attempts.Count);
-        Assert.True(exception.Transport.Attempts[0].WillRetry);
-        Assert.True(exception.Transport.Attempts[1].WillRetry);
-        Assert.False(exception.Transport.Attempts[2].WillRetry);
+        Assert.Equal(1, handler.CallCount);
+        Assert.Single(exception.Transport!.Attempts);
     }
 
     [Fact]
-    public async Task ConnectionFailureRetriesAndProducesStructuredTransportFailure()
+    public async Task ConnectionFailureProducesStructuredFailure()
     {
         var handler = new SequenceHandler(
             _ => throw new HttpRequestException("connection reset"),
             _ => throw new HttpRequestException("connection reset"),
             _ => throw new HttpRequestException("connection reset"));
-        var delay = new RecordingDelayScheduler();
         using var client = Client(handler);
-        var service = new OpenAIService(client, "key", transportOptions: Options(delay));
+        var service = new OpenAIService(client, "key");
 
         var exception = await Assert.ThrowsAsync<LLMTransportException>(
             () => service.GenerateAsync(Request()));
 
         Assert.Equal(LLMProvider.OpenAI, exception.Provider);
         Assert.True(exception.IsTransient);
-        Assert.Equal(3, exception.Transport.Attempts.Count);
+        Assert.Single(exception.Transport.Attempts);
         Assert.All(exception.Transport.Attempts,
             attempt => Assert.Contains(nameof(HttpRequestException), attempt.ExceptionType));
     }
 
     [Fact]
-    public async Task StreamRetriesInitialStatusAndAttachesMetadataToFirstChunk()
+    public async Task StreamInitialFailureIsSentOnce()
     {
-        var completed = """
-        data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.6","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
-
-        """;
-        var handler = new SequenceHandler(
-            _ => Response(HttpStatusCode.BadGateway, "bad gateway"),
-            _ => Response(HttpStatusCode.OK, completed));
-        var delay = new RecordingDelayScheduler();
+        var handler = new SequenceHandler(_ => Response(HttpStatusCode.BadGateway, "bad gateway"));
         using var client = Client(handler);
-        var service = new OpenAIService(client, "key", transportOptions: Options(delay));
-
-        var chunks = new List<StreamChunk>();
-        await foreach (var chunk in service.StreamAsync(Request()))
-            chunks.Add(chunk);
-
-        var first = Assert.Single(chunks);
-        Assert.Equal(2, handler.CallCount);
-        Assert.Equal(2, first.Transport!.Attempts.Count);
-        Assert.NotNull(first.CompletedMessage);
+        var service = new OpenAIService(client, "key");
+        await Assert.ThrowsAsync<LLMApiException>(async () =>
+        {
+            await foreach (var chunk in service.StreamAsync(Request())) { }
+        });
+        Assert.Equal(1, handler.CallCount);
     }
 
     [Fact]
-    public async Task AdmissionLeaseCoversRetriesAndResponseProcessing()
+    public async Task AdmissionLeaseIsReleasedAfterFailure()
     {
         var handler = new SequenceHandler(
             _ => Response(HttpStatusCode.ServiceUnavailable, "unavailable"),
@@ -145,18 +98,16 @@ public sealed class TransportReliabilityTests
         using var client = Client(handler);
         var service = new OpenAIService(client, "key", transportOptions: new LLMTransportOptions
         {
-            Retry = ZeroDelayPolicy(),
-            DelayScheduler = new RecordingDelayScheduler(),
             AdmissionPolicy = admission
         });
 
         Assert.False(admission.LeaseActive);
-        await service.GenerateAsync(Request());
+        await Assert.ThrowsAsync<LLMApiException>(() => service.GenerateAsync(Request()));
 
         Assert.Equal(1, admission.Acquisitions);
         Assert.Equal(1, admission.Disposals);
         Assert.False(admission.LeaseActive);
-        Assert.Equal(2, handler.CallCount);
+        Assert.Equal(1, handler.CallCount);
     }
 
     [Fact]
@@ -171,8 +122,6 @@ public sealed class TransportReliabilityTests
         using var client = Client(handler);
         var service = new OpenAIService(client, "key", transportOptions: new LLMTransportOptions
         {
-            Retry = ZeroDelayPolicy(),
-            DelayScheduler = new RecordingDelayScheduler(),
             AdmissionPolicy = admission
         });
 
@@ -197,9 +146,9 @@ public sealed class TransportReliabilityTests
         var service = new OpenAIService(
             client,
             "key",
-            transportOptions: Options(new RecordingDelayScheduler()));
+            transportOptions: new LLMTransportOptions());
 
-        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        await Assert.ThrowsAsync<LLMTransportException>(async () =>
         {
             await foreach (var _ in service.StreamAsync(Request()))
             {
@@ -210,14 +159,13 @@ public sealed class TransportReliabilityTests
     }
 
     [Fact]
-    public async Task UserCancellationIsNotRetriedAndReleasesAdmissionLease()
+    public async Task UserCancellationIsSentOnceAndReleasesAdmissionLease()
     {
         var handler = new CancellationHandler();
         var admission = new RecordingAdmissionPolicy();
         using var client = Client(handler);
         var service = new OpenAIService(client, "key", transportOptions: new LLMTransportOptions
         {
-            Retry = ZeroDelayPolicy(),
             AdmissionPolicy = admission
         });
         using var cancellation = new CancellationTokenSource();
@@ -233,29 +181,13 @@ public sealed class TransportReliabilityTests
     }
 
     [Fact]
-    public async Task CancellationDuringBackoffStopsBeforeAnotherAttempt()
+    public async Task TransientFailureSendsOneRequest()
     {
-        var handler = new SequenceHandler(
-            _ => Response(HttpStatusCode.ServiceUnavailable, "unavailable"),
-            _ => Response(HttpStatusCode.OK, SuccessfulResponse));
-        var delay = new BlockingDelayScheduler();
-        var admission = new RecordingAdmissionPolicy();
+        var handler = new SequenceHandler(_ => Response(HttpStatusCode.ServiceUnavailable, "unavailable"));
         using var client = Client(handler);
-        var service = new OpenAIService(client, "key", transportOptions: new LLMTransportOptions
-        {
-            Retry = ZeroDelayPolicy(),
-            DelayScheduler = delay,
-            AdmissionPolicy = admission
-        });
-        using var cancellation = new CancellationTokenSource();
-
-        var operation = service.GenerateAsync(Request(), cancellation.Token);
-        await delay.Started.Task;
-        cancellation.Cancel();
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
+        var service = new OpenAIService(client, "key");
+        await Assert.ThrowsAsync<LLMApiException>(() => service.GenerateAsync(Request()));
         Assert.Equal(1, handler.CallCount);
-        Assert.Equal(1, admission.Disposals);
     }
 
     [Fact]
@@ -266,7 +198,6 @@ public sealed class TransportReliabilityTests
         using var client = Client(handler);
         var service = new OpenAIService(client, "key", transportOptions: new LLMTransportOptions
         {
-            Retry = ZeroDelayPolicy(),
             AdmissionPolicy = admission
         });
 
@@ -288,27 +219,7 @@ public sealed class TransportReliabilityTests
     }
 
     [Fact]
-    public async Task RetryObserverFailureIsNotMisclassifiedAsAProviderFailure()
-    {
-        var handler = new SequenceHandler(
-            _ => Response(HttpStatusCode.ServiceUnavailable, "unavailable"),
-            _ => Response(HttpStatusCode.OK, SuccessfulResponse));
-        using var client = Client(handler);
-        var service = new OpenAIService(client, "key", transportOptions: new LLMTransportOptions
-        {
-            Retry = ZeroDelayPolicy(),
-            RetryObserver = new ThrowingRetryObserver()
-        });
-
-        var exception = await Assert.ThrowsAsync<HttpRequestException>(
-            () => service.GenerateAsync(Request()));
-
-        Assert.Equal("observer failed", exception.Message);
-        Assert.Equal(1, handler.CallCount);
-    }
-
-    [Fact]
-    public async Task PerRequestRetryOverrideAndTokenEstimateReachTheTransportLayer()
+    public async Task PerRequestTokenEstimateReachesAdmissionPolicy()
     {
         var handler = new SequenceHandler(
             _ => Response(HttpStatusCode.ServiceUnavailable, "unavailable"),
@@ -317,13 +228,11 @@ public sealed class TransportReliabilityTests
         using var client = Client(handler);
         var service = new OpenAIService(client, "key", transportOptions: new LLMTransportOptions
         {
-            Retry = ZeroDelayPolicy(),
             AdmissionPolicy = admission
         });
         var request = Request();
         request.Transport = new RequestTransportOptions
         {
-            Retry = new RetryPolicy { Enabled = false },
             EstimatedInputTokens = 1234
         };
 
@@ -348,25 +257,6 @@ public sealed class TransportReliabilityTests
     private static HttpClient Client(HttpMessageHandler handler) => new(handler)
     {
         BaseAddress = new Uri("https://api.openai.com/v1/")
-    };
-
-    private static LLMTransportOptions Options(
-        RecordingDelayScheduler delay,
-        RecordingRetryObserver? observer = null) => new()
-    {
-        Retry = ZeroDelayPolicy(),
-        DelayScheduler = delay,
-        RetryObserver = observer,
-        JitterSource = () => 0
-    };
-
-    private static RetryPolicy ZeroDelayPolicy() => new()
-    {
-        MaximumAttempts = 3,
-        BaseDelay = TimeSpan.Zero,
-        MaximumDelay = TimeSpan.Zero,
-        MaximumElapsedTime = TimeSpan.FromMinutes(1),
-        UseJitter = false
     };
 
     private static HttpResponseMessage Response(
@@ -396,44 +286,6 @@ public sealed class TransportReliabilityTests
             var factory = responses[Math.Min(index, responses.Length - 1)];
             return Task.FromResult(factory(request));
         }
-    }
-
-    private sealed class RecordingDelayScheduler : IRetryDelayScheduler
-    {
-        public List<TimeSpan> Delays { get; } = new();
-        public ValueTask DelayAsync(TimeSpan delay, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            Delays.Add(delay);
-            return ValueTask.CompletedTask;
-        }
-    }
-
-    private sealed class BlockingDelayScheduler : IRetryDelayScheduler
-    {
-        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public async ValueTask DelayAsync(TimeSpan delay, CancellationToken cancellationToken = default)
-        {
-            Started.TrySetResult();
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-        }
-    }
-
-    private sealed class RecordingRetryObserver : IRetryObserver
-    {
-        public List<RetryContext> Contexts { get; } = new();
-        public ValueTask OnRetryAsync(RetryContext context, CancellationToken cancellationToken = default)
-        {
-            Contexts.Add(context);
-            return ValueTask.CompletedTask;
-        }
-    }
-
-    private sealed class ThrowingRetryObserver : IRetryObserver
-    {
-        public ValueTask OnRetryAsync(RetryContext context, CancellationToken cancellationToken = default) =>
-            ValueTask.FromException(new HttpRequestException("observer failed"));
     }
 
     private sealed class RecordingAdmissionPolicy : IRequestAdmissionPolicy

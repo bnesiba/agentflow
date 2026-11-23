@@ -231,14 +231,8 @@ namespace LLMAbstraction.Providers.Gemini.Models
         [JsonPropertyName("maxOutputTokens")]
         public int? MaxOutputTokens { get; set; }
 
-        [JsonPropertyName("temperature")]
-        public double? Temperature { get; set; }
 
-        [JsonPropertyName("topP")]
-        public double? TopP { get; set; }
 
-        [JsonPropertyName("topK")]
-        public int? TopK { get; set; }
 
         [JsonPropertyName("stopSequences")]
         public List<string>? StopSequences { get; set; }

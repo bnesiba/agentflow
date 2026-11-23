@@ -64,24 +64,6 @@ namespace LLMAbstraction.Core.Validation
                 "MaxOutputTokens cannot be negative.",
                 "Parameters.MaxOutputTokens");
 
-            if (request.Parameters.Temperature is double temperature)
-            {
-                AddErrorIf(diagnostics,
-                    temperature < capabilities.MinimumTemperature || temperature > capabilities.MaximumTemperature,
-                    "request.temperature.range",
-                    $"{provider} temperature must be between {capabilities.MinimumTemperature} and {capabilities.MaximumTemperature}.",
-                    "Parameters.Temperature");
-            }
-
-            if (request.Parameters.TopP is double topP)
-            {
-                AddErrorIf(diagnostics, topP < 0 || topP > 1,
-                    "request.top_p.range", "TopP must be between 0 and 1.", "Parameters.TopP");
-            }
-
-            AddErrorIf(diagnostics, request.Parameters.TopK <= 0,
-                "request.top_k.range", "TopK must be greater than zero.", "Parameters.TopK");
-
             ValidateTools(request, diagnostics);
             ValidateProviderTools(request, provider, diagnostics);
             ValidateOutputFormat(request, capabilities, diagnostics);
@@ -521,23 +503,6 @@ namespace LLMAbstraction.Core.Validation
                     "ToolChoice.Type"));
             }
 
-            if (mode is AnthropicThinkingMode.Manual or AnthropicThinkingMode.Adaptive)
-            {
-                AddErrorIf(diagnostics, request.Parameters.Temperature != null,
-                    "claude.thinking.temperature_unsupported",
-                    "Claude thinking does not accept an explicit Temperature setting.",
-                    "Parameters.Temperature");
-                AddErrorIf(diagnostics, request.Parameters.TopK != null,
-                    "claude.thinking.top_k_unsupported",
-                    "Claude thinking does not accept an explicit TopK setting.",
-                    "Parameters.TopK");
-                AddErrorIf(diagnostics,
-                    request.Parameters.TopP is double topP && (topP < 0.95 || topP > 1),
-                    "claude.thinking.top_p_range",
-                    "Claude thinking accepts TopP only between 0.95 and 1.0.",
-                    "Parameters.TopP");
-            }
-
             AddWarningIf(diagnostics,
                 capabilities.Family == "claude-5" &&
                 capabilities.Model.StartsWith("claude-opus-5", StringComparison.OrdinalIgnoreCase) &&
@@ -768,23 +733,8 @@ namespace LLMAbstraction.Core.Validation
             ModelCapabilityProfile capabilities,
             List<RequestDiagnostic> diagnostics)
         {
-            var hasSampling = request.Parameters.Temperature != null ||
-                request.Parameters.TopP != null || request.Parameters.TopK != null;
-            if (hasSampling)
-            {
-                AddCapabilityDiagnostic(diagnostics, capabilities.SamplingControls,
-                    "request.sampling.unsupported", "request.sampling.unknown_model",
-                    $"{capabilities.Model} does not accept explicit sampling controls on {capabilities.Surface}.",
-                    $"Sampling-control support is not verified for model '{capabilities.Model}' on {capabilities.Surface}.",
-                    "Parameters");
-            }
-
             if (provider == LLMProvider.OpenAI)
             {
-                AddErrorIf(diagnostics, request.Parameters.TopK != null,
-                    "openai.top_k.unsupported",
-                    "OpenAI Responses does not expose TopK.",
-                    "Parameters.TopK");
                 AddErrorIf(diagnostics, request.Parameters.StopSequences?.Count > 0,
                     "openai.stop_sequences.unsupported",
                     "OpenAI Responses does not expose stop sequences.",
@@ -827,24 +777,6 @@ namespace LLMAbstraction.Core.Validation
 
             if (provider == LLMProvider.Gemini)
             {
-                AddErrorIf(diagnostics,
-                    capabilities.Surface == LLMApiSurface.GeminiInteractions &&
-                    request.Parameters.Temperature != null,
-                    "gemini.interactions.temperature_unrepresentable",
-                    "Gemini Interactions does not expose Temperature; use generateContent.",
-                    "Parameters.Temperature");
-                AddErrorIf(diagnostics,
-                    capabilities.Surface == LLMApiSurface.GeminiInteractions &&
-                    request.Parameters.TopP != null,
-                    "gemini.interactions.top_p_unrepresentable",
-                    "Gemini Interactions does not expose TopP; use generateContent.",
-                    "Parameters.TopP");
-                AddErrorIf(diagnostics,
-                    capabilities.Surface == LLMApiSurface.GeminiInteractions &&
-                    request.Parameters.TopK != null,
-                    "gemini.interactions.top_k_unrepresentable",
-                    "Gemini Interactions does not expose TopK; use generateContent.",
-                    "Parameters.TopK");
                 AddErrorIf(diagnostics, request.ToolChoice?.DisableParallelToolUse != null,
                     "gemini.parallel_tool_control.unmapped",
                     "Gemini DisableParallelToolUse is not currently mapped by the converter.",

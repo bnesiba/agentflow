@@ -65,7 +65,7 @@ namespace LLMAbstraction.Core.Models
         public ProviderContinuationState? Continuation { get; set; }
 
         /// <summary>
-        /// Optional retry override and token estimate for admission control on
+        /// Optional token estimate for admission control on
         /// this request. This is never serialized to a provider payload.
         /// </summary>
         public RequestTransportOptions? Transport { get; set; }
@@ -87,21 +87,6 @@ namespace LLMAbstraction.Core.Models
         /// Maximum tokens to include in the model output.
         /// </summary>
         public int? MaxOutputTokens { get; set; }
-
-        /// <summary>
-        /// Sampling temperature (0.0 to 2.0, provider-dependent)
-        /// </summary>
-        public double? Temperature { get; set; }
-
-        /// <summary>
-        /// Nucleus sampling parameter (0.0 to 1.0)
-        /// </summary>
-        public double? TopP { get; set; }
-
-        /// <summary>
-        /// Top-k sampling parameter
-        /// </summary>
-        public int? TopK { get; set; }
 
         /// <summary>
         /// Stop sequences

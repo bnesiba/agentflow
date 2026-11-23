@@ -49,7 +49,6 @@ public sealed class CapabilityAndStructuredOutputTests
     public void UnknownModelAdvancedControlsAreSentAndRemainVisibleAsWarnings()
     {
         var request = Basic("gpt-future");
-        request.Parameters.Temperature = 0.4;
         request.Reasoning = new ReasoningOptions { Effort = ReasoningEffort.High };
 
         var diagnostics = LLMRequestValidator.Validate(request, LLMProvider.OpenAI);
@@ -58,10 +57,6 @@ public sealed class CapabilityAndStructuredOutputTests
         Assert.Contains(diagnostics, diagnostic =>
             diagnostic.Code == "request.reasoning.unknown_model" &&
             diagnostic.Severity == RequestDiagnosticSeverity.Warning);
-        Assert.Contains(diagnostics, diagnostic =>
-            diagnostic.Code == "request.sampling.unknown_model" &&
-            diagnostic.Severity == RequestDiagnosticSeverity.Warning);
-        Assert.Equal(0.4, converted.Temperature);
         Assert.Equal("high", converted.Reasoning!.Effort);
     }
 
@@ -161,45 +156,6 @@ public sealed class CapabilityAndStructuredOutputTests
     }
 
     [Fact]
-    public void ModelSpecificSamplingWarningDoesNotRemoveSamplingValues()
-    {
-        var request = Basic("claude-sonnet-5");
-        request.Parameters.Temperature = 0.25;
-
-        var diagnostics = LLMRequestValidator.Validate(request, LLMProvider.Claude);
-        var converted = new ClaudeConverter().ConvertRequest(request);
-
-        Assert.Contains(diagnostics, diagnostic =>
-            diagnostic.Code == "request.sampling.unsupported" &&
-            diagnostic.Severity == RequestDiagnosticSeverity.Warning);
-        Assert.Equal(0.25, converted.Temperature);
-    }
-
-    [Fact]
-    public void AnthropicThinkingRejectsSamplingThatConverterWouldOtherwiseDrop()
-    {
-        var request = Basic("claude-sonnet-4-6");
-        request.Parameters.MaxOutputTokens = 4096;
-        request.Parameters.Temperature = 0.5;
-        request.Parameters.TopK = 20;
-        request.Reasoning = new ReasoningOptions
-        {
-            Anthropic = new AnthropicReasoningOptions
-            {
-                Mode = AnthropicThinkingMode.Manual,
-                BudgetTokens = 1024
-            }
-        };
-
-        var diagnostics = LLMRequestValidator.Validate(request, LLMProvider.Claude);
-
-        Assert.Contains(diagnostics,
-            diagnostic => diagnostic.Code == "claude.thinking.temperature_unsupported");
-        Assert.Contains(diagnostics,
-            diagnostic => diagnostic.Code == "claude.thinking.top_k_unsupported");
-    }
-
-    [Fact]
     public void GeminiBudgetIsEndpointAndModelSpecific()
     {
         var request = Basic("gemini-2.5-flash");
@@ -220,19 +176,6 @@ public sealed class CapabilityAndStructuredOutputTests
                 LLMProvider.Gemini,
                 LLMApiSurface.GeminiInteractions),
             diagnostic => diagnostic.Code == "gemini.thinking.budget_unsupported");
-    }
-
-    [Fact]
-    public void DirectGeminiInteractionsConversionRejectsUnrepresentableSampling()
-    {
-        var request = Basic("gemini-3.5-flash");
-        request.Parameters.TopP = 0.8;
-
-        var exception = Assert.Throws<LLMRequestValidationException>(
-            () => new GeminiInteractionsConverter().ConvertRequest(request));
-
-        Assert.Contains(exception.Diagnostics,
-            diagnostic => diagnostic.Code == "gemini.interactions.top_p_unrepresentable");
     }
 
     [Fact]

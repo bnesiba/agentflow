@@ -17,9 +17,9 @@ public sealed class RequestValidationTests
             Parameters = new GenerationParameters
             {
                 MaxOutputTokens = -1,
-                Temperature = 3,
-                TopP = -0.1,
-                TopK = 0
+
+
+
             }
         };
 
@@ -28,9 +28,6 @@ public sealed class RequestValidationTests
         Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "request.model.required");
         Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "request.messages.required");
         Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "request.max_output_tokens.range");
-        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "request.temperature.range");
-        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "request.top_p.range");
-        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "request.top_k.range");
         Assert.All(diagnostics, diagnostic => Assert.False(string.IsNullOrWhiteSpace(diagnostic.PropertyPath)));
     }
 
@@ -124,8 +121,6 @@ public sealed class RequestValidationTests
             "gpt-5.6",
             LLMApiSurface.OpenAIResponses);
 
-        Assert.Equal(1, claude.MaximumTemperature);
-        Assert.Equal(2, openAI.MaximumTemperature);
         Assert.Equal(ModelRecognition.Known, claude.Recognition);
         Assert.Equal(CapabilitySupport.Supported, claude.Reasoning);
         Assert.Equal(CapabilitySupport.Supported, openAI.StructuredOutput);
@@ -140,14 +135,11 @@ public sealed class RequestValidationTests
             Messages = { new UnifiedMessage(MessageRole.User, "Hello") },
             Parameters = new GenerationParameters
             {
-                TopK = 10,
+
                 StopSequences = new List<string> { "END" }
             }
         };
         var openAIErrors = LLMRequestValidator.Validate(openAIRequest, LLMProvider.OpenAI);
-        Assert.Contains(openAIErrors, diagnostic =>
-            diagnostic.Code == "openai.top_k.unsupported" &&
-            diagnostic.Severity == RequestDiagnosticSeverity.Error);
         Assert.Contains(openAIErrors, diagnostic =>
             diagnostic.Code == "openai.stop_sequences.unsupported" &&
             diagnostic.Severity == RequestDiagnosticSeverity.Error);

@@ -85,28 +85,6 @@ public sealed class ProviderServiceContractTests
         Assert.Contains("\"type\":\"user_input\"", handler.LastRequestBody);
     }
 
-    [Fact]
-    public async Task GeminiRoutesSamplingControlsToGenerateContent()
-    {
-        const string response = """
-        {"candidates":[{"content":{"role":"model","parts":[{"text":"Hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}
-        """;
-        var handler = new TestHttpMessageHandler(response);
-        using var client = new HttpClient(handler)
-        {
-            BaseAddress = new Uri("https://generativelanguage.googleapis.com/v1beta/")
-        };
-        var service = new GeminiService(client, "gemini-key");
-        var request = Request("gemini-3.5-flash");
-        request.Parameters.Temperature = 0.4;
-
-        await service.GenerateAsync(request);
-
-        Assert.EndsWith("models/gemini-3.5-flash:generateContent",
-            handler.LastRequest!.RequestUri!.AbsoluteUri);
-        Assert.Contains("\"temperature\":0.4", handler.LastRequestBody);
-    }
-
     private static UnifiedRequest Request(string model) => new()
     {
         Model = model,

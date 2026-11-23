@@ -18,7 +18,7 @@ namespace LLMAbstraction.Providers.Claude
     {
         private static readonly HashSet<string> ProtectedRequestFields = new(StringComparer.Ordinal)
         {
-            "model", "max_tokens", "messages", "system", "temperature", "top_p", "top_k",
+            "model", "max_tokens", "messages", "system",
             "stop_sequences", "stream", "tools", "tool_choice", "output_config", "thinking", "metadata",
             "cache_control"
         };
@@ -48,9 +48,9 @@ namespace LLMAbstraction.Providers.Claude
                 CacheControl = request.Cache?.Mode == PromptCacheMode.PreferReuse
                     ? ConvertCacheControl(request.Cache.Ttl)
                     : null,
-                Temperature = SupportsTemperature(thinking) ? request.Parameters.Temperature : null,
-                TopP = SupportsTopP(thinking, request.Parameters.TopP) ? request.Parameters.TopP : null,
-                TopK = SupportsTopK(thinking) ? request.Parameters.TopK : null,
+
+
+
                 StopSequences = request.Parameters.StopSequences,
                 Stream = request.Parameters.Stream,
                 Thinking = thinking,
@@ -76,25 +76,6 @@ namespace LLMAbstraction.Providers.Claude
             return claudeRequest;
         }
 
-        private static bool SupportsTemperature(ClaudeThinkingConfig? thinking)
-        {
-            return !IsThinkingEnabled(thinking);
-        }
-
-        private static bool SupportsTopK(ClaudeThinkingConfig? thinking)
-        {
-            return !IsThinkingEnabled(thinking);
-        }
-
-        private static bool SupportsTopP(ClaudeThinkingConfig? thinking, double? topP)
-        {
-            return !IsThinkingEnabled(thinking) || topP == null || topP >= 0.95 && topP <= 1.0;
-        }
-
-        private static bool IsThinkingEnabled(ClaudeThinkingConfig? thinking)
-        {
-            return thinking?.Type == "enabled" || thinking?.Type == "adaptive";
-        }
 
         public UnifiedResponse ConvertResponse(ClaudeMessageResponse response)
         {

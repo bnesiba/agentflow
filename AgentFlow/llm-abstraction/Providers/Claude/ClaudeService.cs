@@ -168,7 +168,10 @@ namespace LLMAbstraction.Providers.Claude
             };
         }
 
-        public async IAsyncEnumerable<StreamChunk> StreamAsync(
+        public IAsyncEnumerable<StreamChunk> StreamAsync(UnifiedRequest request, CancellationToken cancellationToken = default) =>
+            ProviderStream.Observe(StreamCoreAsync(request, cancellationToken), LLMProvider.Claude, cancellationToken);
+
+        private async IAsyncEnumerable<StreamChunk> StreamCoreAsync(
             UnifiedRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
@@ -220,9 +223,10 @@ namespace LLMAbstraction.Providers.Claude
             var transportAttached = false;
 
             var receivedTerminal = false;
-            while (!reader.EndOfStream)
+            while (true)
             {
                 var line = await reader.ReadLineAsync(cancellationToken);
+                if (line == null) break;
                 if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("event: ") && !line.StartsWith("data: "))
                     continue;
 
@@ -238,7 +242,7 @@ namespace LLMAbstraction.Providers.Claude
                     switch (eventType)
                     {
                         case "error":
-                            throw new InvalidOperationException("Claude streaming error: " + data);
+                            throw ProviderErrorParser.Create(LLMProvider.Claude, response, data, transportResponse.Metadata);
                         case "message_start":
                             var messageStart = JsonSerializer.Deserialize<ClaudeMessageStart>(data, jsonOptions);
                             messageId = messageStart?.Message?.Id;
