@@ -13,6 +13,7 @@ using LLMAbstraction.Core.Models;
 using LLMAbstraction.Core.Errors;
 using LLMAbstraction.Core;
 using LLMAbstraction.Core.Transport;
+using LLMAbstraction.Core.Validation;
 using LLMAbstraction.Providers.Gemini.Models;
 
 namespace LLMAbstraction.Providers.Gemini
@@ -88,7 +89,7 @@ namespace LLMAbstraction.Providers.Gemini
 
             // Build endpoint URL with model and API key
             // Gemini uses model in the URL path
-            var endpoint = $"models/{request.Model}:generateContent";
+            var endpoint = $"{ModelPath(request.Model)}:generateContent";
 
             // Serialize request
             var jsonOptions = new JsonSerializerOptions
@@ -147,9 +148,9 @@ namespace LLMAbstraction.Providers.Gemini
                 GenerateContentRequest = _converter.ConvertRequest(request)
             };
             var jsonOptions = JsonOptions();
-            countRequest.GenerateContentRequest.Model = request.Model.StartsWith("models/") ? request.Model : $"models/{request.Model}";
+            countRequest.GenerateContentRequest.Model = ModelPath(request.Model);
             var jsonContent = JsonSerializer.Serialize(countRequest, jsonOptions);
-            var endpoint = $"models/{request.Model}:countTokens";
+            var endpoint = $"{ModelPath(request.Model)}:countTokens";
             using var transportResponse = await _transport.SendAsync(
                 () => CreateJsonRequest(endpoint, jsonContent),
                 endpoint,
@@ -351,6 +352,8 @@ namespace LLMAbstraction.Providers.Gemini
         {
             ArgumentNullException.ThrowIfNull(request);
             ArgumentNullException.ThrowIfNull(request.Prefix);
+            if (ModelCapabilityRegistry.IsGemini4(request.Prefix.Model))
+                throw new NotSupportedException("Gemini 4 models use implicit caching and cannot create cachedContent resources.");
             ValidateExpiration(request.Ttl, request.ExpireTime, allowNeither: true);
             if (request.DisplayName?.Length > 128)
                 throw new ArgumentException("Gemini cached-content DisplayName cannot exceed 128 Unicode characters.", nameof(request));
@@ -416,7 +419,7 @@ namespace LLMAbstraction.Providers.Gemini
                 DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
             };
             var jsonContent = JsonSerializer.Serialize(geminiRequest, jsonOptions);
-            var endpoint = $"models/{request.Model}:streamGenerateContent?alt=sse";
+            var endpoint = $"{ModelPath(request.Model)}:streamGenerateContent?alt=sse";
             using var transportResponse = await _transport.SendAsync(
                 () => CreateJsonRequest(endpoint, jsonContent),
                 endpoint,
@@ -745,7 +748,9 @@ namespace LLMAbstraction.Providers.Gemini
                 if (streamEvent.EventType == "step.delta" && streamEvent.Delta is JsonElement stepDelta &&
                     steps.TryGetValue(stepIndex, out var activeStep))
                 {
-                    var fragment = GetString(stepDelta, "arguments_delta") ?? GetString(stepDelta, "partial_arguments");
+                    var fragment = GetString(stepDelta, "type") == "arguments_delta"
+                        ? GetString(stepDelta, "arguments")
+                        : GetString(stepDelta, "arguments_delta") ?? GetString(stepDelta, "partial_arguments");
                     if (fragment != null && argumentBuffers.TryGetValue(stepIndex, out var buffer))
                     {
                         buffer.Append(fragment);
@@ -762,8 +767,10 @@ namespace LLMAbstraction.Providers.Gemini
                             }
                         }, transportResponse.Metadata, ref transportAttached);
                     }
-                    if (GetString(stepDelta, "type") == "text" && activeStep["content"] is JsonArray content)
+                    if (GetString(stepDelta, "type") == "text")
                     {
+                        activeStep["content"] ??= new JsonArray();
+                        var content = activeStep["content"]!.AsArray();
                         var text = content.OfType<JsonObject>().LastOrDefault(part => part["type"]?.GetValue<string>() == "text");
                         if (text == null) { text = new JsonObject { ["type"] = "text", ["text"] = "" }; content.Add(text); }
                         text["text"] = (text["text"]?.GetValue<string>() ?? "") + GetString(stepDelta, "text");
@@ -779,11 +786,22 @@ namespace LLMAbstraction.Providers.Gemini
                     }
                     if (stepDelta.TryGetProperty("signature", out var signature))
                         activeStep["signature"] = JsonNode.Parse(signature.GetRawText());
+                    if (GetString(stepDelta, "type") is "google_search_call" or "google_search_result")
+                    {
+                        foreach (var field in stepDelta.EnumerateObject())
+                            activeStep[field.Name] = JsonNode.Parse(field.Value.GetRawText());
+                    }
+                    if (GetString(stepDelta, "type") == "thought_summary" &&
+                        stepDelta.TryGetProperty("content", out var summary))
+                    {
+                        activeStep["summary"] ??= new JsonArray();
+                        activeStep["summary"]!.AsArray().Add(JsonNode.Parse(summary.GetRawText()));
+                    }
                 }
+                if (streamEvent.EventType == "step.stop" && streamEvent.Step is JsonElement fullStep)
+                    steps[stepIndex] = JsonNode.Parse(fullStep.GetRawText())!.AsObject();
                 if (streamEvent.EventType == "step.stop" && steps.TryGetValue(stepIndex, out var finishedStep))
                 {
-                    if (streamEvent.Step is JsonElement fullStep)
-                        steps[stepIndex] = finishedStep = JsonNode.Parse(fullStep.GetRawText())!.AsObject();
                     if (argumentBuffers.TryGetValue(stepIndex, out var argumentsBuffer) && argumentsBuffer.Length > 0)
                         finishedStep["arguments"] = JsonNode.Parse(argumentsBuffer.ToString());
                     if (finishedStep["type"]?.GetValue<string>() == "function_call")
@@ -800,16 +818,16 @@ namespace LLMAbstraction.Providers.Gemini
                 }
 
                 if (streamEvent.EventType is "step.start" or "step.stop" &&
-                    streamEvent.Step is JsonElement step)
+                    steps.TryGetValue(stepIndex, out var searchStep))
                 {
-                    var stepType = GetString(step, "type");
-                    var projected = new List<ContentBlock>();
-                    GeminiInteractionsConverter.ProjectStep(step, projected);
+                    var stepType = searchStep["type"]?.GetValue<string>();
                     var shouldEmit =
                         (streamEvent.EventType == "step.start" && stepType == "google_search_call") ||
                         (streamEvent.EventType == "step.stop" && stepType == "google_search_result");
                     if (shouldEmit)
                     {
+                        var projected = new List<ContentBlock>();
+                        GeminiInteractionsConverter.ProjectStep(JsonSerializer.SerializeToElement(searchStep), projected);
                         yield return AttachTransport(new StreamChunk
                         {
                             Model = request.Model,
@@ -886,12 +904,16 @@ namespace LLMAbstraction.Providers.Gemini
                         Continuation = completed.Continuation,
                         ProviderMetadata = completed.ProviderMetadata
                     }, transportResponse.Metadata, ref transportAttached);
+                    yield break;
                 }
             }
         }
 
         private static HttpRequestMessage CreateJsonRequest(string endpoint, string json) =>
             CreateRequest(HttpMethod.Post, endpoint, json);
+
+        private static string ModelPath(string model) =>
+            model.StartsWith("models/", StringComparison.Ordinal) ? model : $"models/{model}";
 
         private static HttpRequestMessage CreateRequest(
             HttpMethod method,

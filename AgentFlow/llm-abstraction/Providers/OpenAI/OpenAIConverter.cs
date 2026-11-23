@@ -20,7 +20,7 @@ namespace LLMAbstraction.Providers.OpenAI
         {
             "model", "input", "previous_response_id", "instructions", "max_output_tokens",
              "stream", "tools", "tool_choice", "parallel_tool_calls",
-            "text", "reasoning", "user", "metadata", "include", "prompt_cache_key",
+            "text", "reasoning", "safety_identifier", "user", "metadata", "include", "prompt_cache_key",
             "prompt_cache_options", "prompt_cache_retention"
         };
         private static readonly JsonSerializerOptions NativeJsonOptions = new()
@@ -47,7 +47,7 @@ namespace LLMAbstraction.Providers.OpenAI
 
 
                 Stream = request.Parameters.Stream,
-                User = request.Metadata?.UserId,
+                SafetyIdentifier = request.Metadata?.UserId,
                 Metadata = request.Metadata?.Tags,
                 PromptCacheKey = request.Cache?.OpenAI?.CacheKey,
                 PromptCacheOptions = ConvertPromptCacheOptions(request),
@@ -346,7 +346,9 @@ namespace LLMAbstraction.Providers.OpenAI
                             {
                                 { "type", "function_call_output" },
                                 { "call_id", toolResult.ToolCallId },
-                                { "output", SerializeToolResult(toolResult.Output) }
+                                { "output", toolResult.IsError == true
+                                    ? JsonSerializer.Serialize(new { error = toolResult.Output })
+                                    : SerializeToolResult(toolResult.Output) }
                             });
                             break;
 
@@ -495,8 +497,20 @@ namespace LLMAbstraction.Providers.OpenAI
             PromptCacheDirective? directive)
         {
             if (directive != null)
-                item["prompt_cache_breakpoint"] = new Dictionary<string, object> { ["mode"] = "explicit" };
+                item["prompt_cache_breakpoint"] = new OpenAIPromptCacheConfig
+                {
+                    Mode = "explicit",
+                    Ttl = ConvertCacheTtl(directive.Ttl)
+                };
         }
+
+        private static string? ConvertCacheTtl(PromptCacheTtl? ttl) => ttl switch
+        {
+            null => null,
+            PromptCacheTtl.ThirtyMinutes => "30m",
+            PromptCacheTtl.TwelveHours => "12h",
+            _ => throw new ArgumentOutOfRangeException(nameof(ttl))
+        };
 
         private static OpenAIPromptCacheConfig? ConvertPromptCacheOptions(UnifiedRequest request)
         {
@@ -509,7 +523,7 @@ namespace LLMAbstraction.Providers.OpenAI
                 _ when hasBreakpoints => "explicit",
                 _ => null
             };
-            var ttl = request.Cache?.Ttl == PromptCacheTtl.ThirtyMinutes ? "30m" : null;
+            var ttl = ConvertCacheTtl(request.Cache?.Ttl);
             return mode != null || ttl != null
                 ? new OpenAIPromptCacheConfig { Mode = mode, Ttl = ttl }
                 : null;

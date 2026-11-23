@@ -203,7 +203,11 @@ namespace LLMAbstraction.Providers.Gemini
                     Output = result.ValueKind == JsonValueKind.Undefined
                         ? null
                         : JsonSerializer.Deserialize<object>(result.GetRawText()),
-                    SearchSuggestionsHtml = GetString(result, "search_suggestions"),
+                    IsError = step.TryGetProperty("is_error", out var error) &&
+                        error.ValueKind is JsonValueKind.True or JsonValueKind.False ? error.GetBoolean() : null,
+                    SearchSuggestionsHtml = result.ValueKind == JsonValueKind.Array
+                        ? string.Concat(result.EnumerateArray().Select(item => GetString(item, "search_suggestions")))
+                        : GetString(result, "search_suggestions"),
                     Sources = ExtractSources(result),
                     NativeRepresentation = native
                 });
@@ -240,7 +244,15 @@ namespace LLMAbstraction.Providers.Gemini
                 var regularContent = new List<object>();
                 foreach (var block in message.Content)
                 {
-                    if (block is ToolCallContent call)
+                    if (message.Role == MessageRole.Assistant &&
+                        block.NativeRepresentation is { Provider: ProviderIds.Gemini } native &&
+                        GetString(native.Value, "type") is "function_call" or "google_search_call" or
+                            "google_search_result" or "thought")
+                    {
+                        FlushContentStep(message.Role, regularContent, steps);
+                        steps.Add(native.Value.Clone());
+                    }
+                    else if (block is ToolCallContent call)
                     {
                         FlushContentStep(message.Role, regularContent, steps);
                         steps.Add(ToElement(new Dictionary<string, object?>
@@ -259,7 +271,11 @@ namespace LLMAbstraction.Providers.Gemini
                             ["type"] = "function_result",
                             ["call_id"] = result.ToolCallId,
                             ["name"] = result.ToolName,
-                            ["result"] = result.Output ?? string.Empty,
+                            ["result"] = new[] { new
+                            {
+                                type = "text",
+                                text = result.Output as string ?? JsonSerializer.Serialize(result.Output)
+                            } },
                             ["is_error"] = result.IsError
                         }));
                     }
@@ -307,6 +323,7 @@ namespace LLMAbstraction.Providers.Gemini
                 ImageContent image when image.Source.Url != null => new Dictionary<string, object?>
                 {
                     ["type"] = "image",
+                    ["mime_type"] = image.Source.MediaType,
                     ["uri"] = image.Source.Url
                 },
                 MediaContent media when media.Source.Base64Data != null => new Dictionary<string, object?>

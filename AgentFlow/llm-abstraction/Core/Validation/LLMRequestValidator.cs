@@ -117,7 +117,7 @@ namespace LLMAbstraction.Core.Validation
                     ValidateAnthropicPromptCaching(request, directives, diagnostics);
                     break;
                 case LLMProvider.OpenAI:
-                    ValidateOpenAIPromptCaching(request, directives, diagnostics);
+                    ValidateOpenAIPromptCaching(request, capabilities, directives, diagnostics);
                     break;
                 case LLMProvider.Gemini:
                     ValidateGeminiPromptCaching(request, capabilities.Surface, directives, diagnostics);
@@ -159,19 +159,36 @@ namespace LLMAbstraction.Core.Validation
                     "claude.cache.ttl_order",
                     "Anthropic requires one-hour cache prefixes to precede five-minute prefixes in tools, instructions, then message order.", path);
             }
+
+            if (request.Cache?.Mode == PromptCacheMode.PreferReuse)
+            {
+                var automaticTtl = request.Cache.Ttl ?? PromptCacheTtl.FiveMinutes;
+                var lastBlock = request.Messages.Where(message => message.Role != MessageRole.System)
+                    .SelectMany(message => message.Content)
+                    .LastOrDefault(block => block is not ProviderNativeContent { NativeType: "thinking" or "redacted_thinking" }
+                        and not TextContent { Text.Length: 0 });
+                AddErrorIf(diagnostics, lastBlock?.Cache is { } last &&
+                    (last.Ttl ?? PromptCacheTtl.FiveMinutes) != automaticTtl,
+                    "claude.cache.final_ttl_conflict",
+                    "The automatic cache TTL must match the explicit TTL on the final content block.", "Cache.Ttl");
+                AddErrorIf(diagnostics, sawFiveMinute && automaticTtl == PromptCacheTtl.OneHour && lastBlock?.Cache == null,
+                    "claude.cache.ttl_order",
+                    "An automatic one-hour breakpoint cannot follow a five-minute breakpoint.", "Cache.Ttl");
+            }
         }
 
         private static void ValidateOpenAIPromptCaching(
             UnifiedRequest request,
+            ModelCapabilityProfile capabilities,
             List<(PromptCacheDirective Directive, string Path, ContentBlock? Block)> directives,
             List<RequestDiagnostic> diagnostics)
         {
             AddErrorIf(diagnostics, request.Cache?.Gemini != null,
                 "openai.cache.provider_options_unsupported",
                 "OpenAI requests cannot use Gemini prompt-cache extensions.", "Cache.Gemini");
-            AddErrorIf(diagnostics, request.Cache?.Ttl is not null and not PromptCacheTtl.ThirtyMinutes,
+            AddErrorIf(diagnostics, request.Cache?.Ttl is not null and not (PromptCacheTtl.ThirtyMinutes or PromptCacheTtl.TwelveHours),
                 "openai.cache.ttl_unsupported",
-                "OpenAI prompt_cache_options accepts only the ThirtyMinutes TTL.", "Cache.Ttl");
+                "OpenAI prompt cache TTL must be ThirtyMinutes or TwelveHours.", "Cache.Ttl");
             AddErrorIf(diagnostics, request.InstructionsCache != null,
                 "openai.cache.instructions_breakpoint_unrepresentable",
                 "OpenAI Responses explicit breakpoints can be placed on input text, image, or file items, not the top-level instructions field.",
@@ -180,27 +197,33 @@ namespace LLMAbstraction.Core.Validation
                 "openai.cache.tool_breakpoint_unrepresentable",
                 "OpenAI Responses explicit breakpoints cannot be placed on tool declarations.", "Tools.Cache");
             AddErrorIf(diagnostics,
-                request.Cache?.OpenAI?.Retention != null && request.Cache?.Ttl != null,
+                request.Cache?.OpenAI?.Retention != null && (request.Cache?.Ttl != null || directives.Any(item => item.Directive.Ttl != null)),
                 "openai.cache.retention_ttl_conflict",
                 "OpenAI legacy prompt_cache_retention cannot be combined with prompt_cache_options TTL.", "Cache");
 
             var hasExplicitBreakpoints = directives.Any(item => item.Block != null);
+            var supportsBreakpoints = capabilities.Model.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase) ||
+                capabilities.Model.StartsWith("gpt-6", StringComparison.OrdinalIgnoreCase);
+            AddErrorIf(diagnostics, !supportsBreakpoints && capabilities.Recognition == ModelRecognition.Known &&
+                (request.Cache?.Ttl != null || directives.Any(item => item.Directive.Ttl != null)),
+                "openai.cache.model_ttl_unsupported",
+                $"{capabilities.Model} does not support 30-minute or 12-hour prompt-cache TTL controls.", "Cache");
             AddWarningIf(diagnostics,
-                hasExplicitBreakpoints && !request.Model.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase),
+                hasExplicitBreakpoints && !supportsBreakpoints,
                 "openai.cache.explicit_breakpoint_model_unverified",
                 $"Explicit prompt-cache breakpoints are not verified for model '{request.Model}'; the fields will still be sent.",
                 "Messages");
             AddWarningIf(diagnostics,
-                request.Cache?.OpenAI?.Retention != null && request.Model.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase),
+                request.Cache?.OpenAI?.Retention != null && supportsBreakpoints,
                 "openai.cache.retention_model_unverified",
                 $"Legacy prompt_cache_retention is not documented for model '{request.Model}'; the field will still be sent.",
                 "Cache.OpenAI.Retention");
 
             foreach (var (directive, path, block) in directives)
             {
-                AddErrorIf(diagnostics, directive.Ttl != null,
-                    "openai.cache.breakpoint_ttl_unrepresentable",
-                    "OpenAI TTL is request-wide; individual explicit breakpoints cannot specify a TTL.", path);
+                AddErrorIf(diagnostics, directive.Ttl is not null and not (PromptCacheTtl.ThirtyMinutes or PromptCacheTtl.TwelveHours),
+                    "openai.cache.breakpoint_ttl_unsupported",
+                    "OpenAI breakpoint TTL must be ThirtyMinutes or TwelveHours.", path);
                 AddErrorIf(diagnostics,
                     block != null && block is not TextContent && block is not ImageContent && block is not MediaContent,
                     "openai.cache.breakpoint_unrepresentable",
@@ -217,6 +240,10 @@ namespace LLMAbstraction.Core.Validation
             AddErrorIf(diagnostics, request.Cache?.OpenAI != null,
                 "gemini.cache.provider_options_unsupported",
                 "Gemini requests cannot use OpenAI prompt-cache extensions.", "Cache.OpenAI");
+            AddErrorIf(diagnostics, ModelCapabilityRegistry.IsGemini4(request.Model) &&
+                !string.IsNullOrWhiteSpace(request.Cache?.Gemini?.CachedContentName),
+                "gemini.cache.explicit_model_unsupported",
+                "Gemini 4 models use implicit caching and cannot use cachedContent resources.", "Cache.Gemini.CachedContentName");
             AddErrorIf(diagnostics, directives.Count > 0,
                 "gemini.cache.breakpoints_unrepresentable",
                 "Gemini does not expose per-block cache breakpoints; use implicit caching or a cachedContent resource.", "Messages");
@@ -270,6 +297,8 @@ namespace LLMAbstraction.Core.Validation
             List<RequestDiagnostic> diagnostics)
         {
             var tools = request.Tools ?? new ToolCollection();
+            AddErrorIf(diagnostics, request.ToolChoice?.Type == ToolChoiceType.Required && tools.Count == 0,
+                "request.tool_choice.tools_required", "Required tool choice needs at least one tool.", "ToolChoice.Type");
             var functionTools = tools.OfType<FunctionTool>().ToList();
             for (var index = 0; index < functionTools.Count; index++)
             {
@@ -463,10 +492,11 @@ namespace LLMAbstraction.Core.Validation
             }
             if (mode == AnthropicThinkingMode.Manual)
             {
-                AddCapabilityDiagnostic(diagnostics, capabilities.AnthropicManualThinking,
-                    "claude.thinking.manual_unsupported", "claude.thinking.manual_unknown_model",
-                    $"{capabilities.Model} does not support manual thinking budgets.",
-                    $"Manual thinking support is not verified for model '{capabilities.Model}'.",
+                AddErrorIf(diagnostics, capabilities.AnthropicManualThinking == CapabilitySupport.Unsupported,
+                    "claude.thinking.manual_unsupported", $"{capabilities.Model} does not support manual thinking budgets.",
+                    "Reasoning.Anthropic.Mode");
+                AddWarningIf(diagnostics, capabilities.AnthropicManualThinking == CapabilitySupport.Unknown,
+                    "claude.thinking.manual_unknown_model", $"Manual thinking support is not verified for model '{capabilities.Model}'.",
                     "Reasoning.Anthropic.Mode");
                 AddErrorIf(diagnostics, options.BudgetTokens == null,
                     "claude.thinking.budget_required",
@@ -503,13 +533,15 @@ namespace LLMAbstraction.Core.Validation
                     "ToolChoice.Type"));
             }
 
-            AddWarningIf(diagnostics,
-                capabilities.Family == "claude-5" &&
-                capabilities.Model.StartsWith("claude-opus-5", StringComparison.OrdinalIgnoreCase) &&
-                mode == AnthropicThinkingMode.Disabled &&
+            AddErrorIf(diagnostics, mode == AnthropicThinkingMode.Disabled &&
+                capabilities.AnthropicDisabledThinking == CapabilitySupport.Unsupported,
+                "claude.thinking.disabled_unsupported",
+                $"{capabilities.Model} does not accept disabled thinking.", "Reasoning.Anthropic.Mode");
+            AddErrorIf(diagnostics, mode == AnthropicThinkingMode.Disabled &&
+                capabilities.AnthropicDisabledThinkingLimitedToHigh &&
                 request.Reasoning.Effort is ReasoningEffort.XHigh or ReasoningEffort.Max,
                 "claude.thinking.disabled_effort_conflict",
-                "Claude Opus 5 cannot disable thinking at XHigh or Max effort.",
+                $"{capabilities.Model} cannot disable thinking at XHigh or Max effort.",
                 "Reasoning");
         }
 
@@ -562,9 +594,14 @@ namespace LLMAbstraction.Core.Validation
                     "gemini.interactions.thinking_budget_unrepresentable",
                     "Gemini Interactions has no ThinkingBudget field; use a portable Effort thinking level or generateContent.",
                     "Reasoning.Gemini.ThinkingBudget");
-                AddErrorIf(diagnostics, budget < 0,
+                AddWarningIf(diagnostics, capabilities.Surface == LLMApiSurface.GeminiGenerateContent &&
+                    ModelCapabilityRegistry.IsGemini4(capabilities.Model),
+                    "gemini.thinking.budget_deprecated",
+                    "Gemini 4 maps a numeric budget to a thinking level. Use Reasoning.Effort to select the level directly.",
+                    "Reasoning.Gemini.ThinkingBudget");
+                AddErrorIf(diagnostics, budget < -1,
                     "gemini.thinking.budget_range",
-                    "Gemini ThinkingBudget cannot be negative.",
+                    "Gemini ThinkingBudget must be -1 for dynamic thinking or a nonnegative budget.",
                     "Reasoning.Gemini.ThinkingBudget");
                 AddErrorIf(diagnostics, reasoning.Effort != null,
                     "gemini.thinking.conflicting_controls",

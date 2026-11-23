@@ -272,7 +272,7 @@ namespace LLMAbstraction.Providers.OpenAI
             json.Remove("top_p");
             json.Remove("stream");
             json.Remove("include");
-            json.Remove("user");
+            json.Remove("safety_identifier");
             json.Remove("metadata");
             return json.ToJsonString(options);
         }

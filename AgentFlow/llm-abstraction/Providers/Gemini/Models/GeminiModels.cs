@@ -315,7 +315,7 @@ namespace LLMAbstraction.Providers.Gemini.Models
         [JsonPropertyName("description")]
         public string Description { get; set; } = string.Empty;
 
-        [JsonPropertyName("parameters")]
+        [JsonPropertyName("parametersJsonSchema")]
         public Dictionary<string, object> Parameters { get; set; } = new();
     }
 

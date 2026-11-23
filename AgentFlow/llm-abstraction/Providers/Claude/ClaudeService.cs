@@ -547,31 +547,8 @@ namespace LLMAbstraction.Providers.Claude
                 if (betaValue is string betaHeader && !string.IsNullOrWhiteSpace(betaHeader))
                 {
                     httpRequest.Headers.TryAddWithoutValidation("anthropic-beta", betaHeader);
-                    return;
                 }
             }
-
-            if (UsesClaudeFileId(request.Messages))
-            {
-                httpRequest.Headers.TryAddWithoutValidation("anthropic-beta", "files-api-2025-04-14");
-            }
-        }
-
-        private static bool UsesClaudeFileId(List<UnifiedMessage> messages)
-        {
-            foreach (var message in messages)
-            {
-                foreach (var block in message.Content)
-                {
-                    if (block is MediaContent media &&
-                        !string.IsNullOrEmpty(media.Source.FileId))
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
         }
     }
 }

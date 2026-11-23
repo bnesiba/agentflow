@@ -289,7 +289,7 @@ namespace LLMAbstraction.Examples
 
             var request = new UnifiedRequest
             {
-                Model = "gemini-2.5-flash",
+                Model = "gemini-4-hydrogen",
                 Messages = new List<UnifiedMessage>
                 {
                     new UnifiedMessage(MessageRole.User, "Give me a recipe for chocolate chip cookies.")

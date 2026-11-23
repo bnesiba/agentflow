@@ -47,6 +47,8 @@ namespace LLMAbstraction.Core.Validation
         public CapabilitySupport ThinkingBudget { get; init; }
         public CapabilitySupport AnthropicAdaptiveThinking { get; init; }
         public CapabilitySupport AnthropicManualThinking { get; init; }
+        public CapabilitySupport AnthropicDisabledThinking { get; init; }
+        public bool AnthropicDisabledThinkingLimitedToHigh { get; init; }
         public CapabilitySupport OpenAIProMode { get; init; }
         public CapabilitySupport OpenAIReasoningContext { get; init; }
         public IReadOnlySet<ReasoningEffort> ReasoningEfforts { get; init; } =
@@ -55,6 +57,10 @@ namespace LLMAbstraction.Core.Validation
 
     public static class ModelCapabilityRegistry
     {
+        internal static bool IsGemini4(string? model) =>
+            model?.StartsWith("gemini-4-", StringComparison.OrdinalIgnoreCase) == true ||
+            model?.StartsWith("models/gemini-4-", StringComparison.OrdinalIgnoreCase) == true;
+
         private static readonly IReadOnlySet<ReasoningEffort> ClaudeModernEfforts = Set(
             ReasoningEffort.Low,
             ReasoningEffort.Medium,
@@ -104,7 +110,8 @@ namespace LLMAbstraction.Core.Validation
 
         private static ModelCapabilityProfile ResolveClaude(string model, LLMApiSurface surface)
         {
-            if (StartsWith(model, "claude-sonnet-5") || StartsWith(model, "claude-opus-5"))
+            var version = System.Text.RegularExpressions.Regex.Replace(model, @"-\d{8}$", "").ToLowerInvariant();
+            if (version is "claude-sonnet-5" or "claude-opus-5" or "claude-haiku-5-5" or "claude-sonnet-5-5" or "claude-opus-5-5")
             {
                 return Known(LLMProvider.Claude, surface, model, "claude-5",
                     structured: CapabilitySupport.Supported,
@@ -112,7 +119,10 @@ namespace LLMAbstraction.Core.Validation
                     reasoning: CapabilitySupport.Supported,
                     efforts: ClaudeModernEfforts,
                     adaptive: CapabilitySupport.Supported,
-                    manual: CapabilitySupport.Unsupported);
+                    manual: CapabilitySupport.Unsupported,
+                    disabled: version is "claude-opus-5-5" or "claude-sonnet-5-5"
+                        ? CapabilitySupport.Unsupported : CapabilitySupport.Supported,
+                    disabledLimitedToHigh: version is "claude-haiku-5-5" or "claude-opus-5");
             }
 
             if (StartsWith(model, "claude-sonnet-4-6") || StartsWith(model, "claude-opus-4-6"))
@@ -142,6 +152,13 @@ namespace LLMAbstraction.Core.Validation
 
         private static ModelCapabilityProfile ResolveOpenAI(string model, LLMApiSurface surface)
         {
+            if (StartsWith(model, "gpt-6-luna"))
+                return Known(LLMProvider.OpenAI, surface, model, "gpt-6-luna",
+                    structured: CapabilitySupport.Supported,
+                    reasoning: CapabilitySupport.Supported,
+                    efforts: OpenAI56Efforts,
+                    pro: CapabilitySupport.Supported);
+
             if (StartsWith(model, "gpt-5.6"))
             {
                 return Known(LLMProvider.OpenAI, surface, model, "gpt-5.6",
@@ -182,6 +199,11 @@ namespace LLMAbstraction.Core.Validation
 
         private static ModelCapabilityProfile ResolveGemini(string model, LLMApiSurface surface)
         {
+            if (StartsWith(model, "gemini-4-hydrogen"))
+                return GeminiKnown(model, surface, "gemini-4-hydrogen",
+                    Set(ReasoningEffort.Low, ReasoningEffort.Medium, ReasoningEffort.High, ReasoningEffort.XHigh),
+                    supportsGenerateContentBudget: true);
+
             if (StartsWith(model, "gemini-3.5-flash-lite"))
                 return GeminiKnown(model, surface, "gemini-3.5-flash-lite", GeminiAllLevels);
 
@@ -206,14 +228,11 @@ namespace LLMAbstraction.Core.Validation
 
             if (StartsWith(model, "gemini-2.5-pro") || StartsWith(model, "gemini-2.5-flash"))
             {
-                var profile = GeminiKnown(model, surface, "gemini-2.5",
+                return GeminiKnown(model, surface, "gemini-2.5",
                     surface == LLMApiSurface.GeminiInteractions
                         ? Set(ReasoningEffort.Low, ReasoningEffort.Medium, ReasoningEffort.High)
-                        : Set());
-                return CopyWithBudget(profile,
-                    surface == LLMApiSurface.GeminiGenerateContent
-                        ? CapabilitySupport.Supported
-                        : CapabilitySupport.Unsupported);
+                        : Set(),
+                    supportsGenerateContentBudget: true);
             }
 
             return Unknown(LLMProvider.Gemini, surface, model);
@@ -223,11 +242,14 @@ namespace LLMAbstraction.Core.Validation
             string model,
             LLMApiSurface surface,
             string family,
-            IReadOnlySet<ReasoningEffort> efforts) =>
+            IReadOnlySet<ReasoningEffort> efforts,
+            bool supportsGenerateContentBudget = false) =>
             Known(LLMProvider.Gemini, surface, model, family,
                 structured: CapabilitySupport.Supported,
                 reasoning: CapabilitySupport.Supported,
-                efforts: efforts);
+                efforts: efforts,
+                budget: supportsGenerateContentBudget && surface == LLMApiSurface.GeminiGenerateContent
+                    ? CapabilitySupport.Supported : CapabilitySupport.Unsupported);
 
         private static ModelCapabilityProfile Known(
             LLMProvider provider,
@@ -241,7 +263,10 @@ namespace LLMAbstraction.Core.Validation
             CapabilitySupport adaptive = CapabilitySupport.Unsupported,
             CapabilitySupport manual = CapabilitySupport.Unsupported,
             CapabilitySupport pro = CapabilitySupport.Unsupported,
-            CapabilitySupport context = CapabilitySupport.Unsupported) => new()
+            CapabilitySupport context = CapabilitySupport.Unsupported,
+            CapabilitySupport disabled = CapabilitySupport.Unknown,
+            bool disabledLimitedToHigh = false,
+            CapabilitySupport budget = CapabilitySupport.Unsupported) => new()
         {
             Provider = provider,
             Surface = surface,
@@ -251,9 +276,11 @@ namespace LLMAbstraction.Core.Validation
             StructuredOutput = structured,
             JsonObjectOutput = jsonObject,
             Reasoning = reasoning,
-            ThinkingBudget = CapabilitySupport.Unsupported,
+            ThinkingBudget = budget,
             AnthropicAdaptiveThinking = adaptive,
             AnthropicManualThinking = manual,
+            AnthropicDisabledThinking = disabled,
+            AnthropicDisabledThinkingLimitedToHigh = disabledLimitedToHigh,
             OpenAIProMode = pro,
             OpenAIReasoningContext = context,
             ReasoningEfforts = efforts
@@ -277,26 +304,6 @@ namespace LLMAbstraction.Core.Validation
             AnthropicManualThinking = CapabilitySupport.Unknown,
             OpenAIProMode = CapabilitySupport.Unknown,
             OpenAIReasoningContext = CapabilitySupport.Unknown,
-        };
-
-        private static ModelCapabilityProfile CopyWithBudget(
-            ModelCapabilityProfile source,
-            CapabilitySupport budget) => new()
-        {
-            Provider = source.Provider,
-            Surface = source.Surface,
-            Model = source.Model,
-            Family = source.Family,
-            Recognition = source.Recognition,
-            StructuredOutput = source.StructuredOutput,
-            JsonObjectOutput = source.JsonObjectOutput,
-            Reasoning = source.Reasoning,
-            ThinkingBudget = budget,
-            AnthropicAdaptiveThinking = source.AnthropicAdaptiveThinking,
-            AnthropicManualThinking = source.AnthropicManualThinking,
-            OpenAIProMode = source.OpenAIProMode,
-            OpenAIReasoningContext = source.OpenAIReasoningContext,
-            ReasoningEfforts = source.ReasoningEfforts
         };
 
         private static IReadOnlySet<ReasoningEffort> Set(params ReasoningEffort[] efforts) =>

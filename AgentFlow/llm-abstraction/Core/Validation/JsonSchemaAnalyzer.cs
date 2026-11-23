@@ -125,7 +125,19 @@ namespace LLMAbstraction.Core.Validation
                     "Output.JsonSchema.Schema"));
             }
 
-            if (node.TryGetProperty("properties", out var properties))
+            var hasProperties = node.TryGetProperty("properties", out var properties);
+            var objectType = type.ValueKind == JsonValueKind.String && type.GetString() == "object" ||
+                type.ValueKind == JsonValueKind.Array && type.EnumerateArray().Any(
+                    item => item.ValueKind == JsonValueKind.String && item.GetString() == "object");
+            if ((hasProperties || objectType) &&
+                (!node.TryGetProperty("additionalProperties", out var additional) || additional.ValueKind != JsonValueKind.False))
+            {
+                diagnostics.Add(Error(
+                    "request.response_schema.additional_properties",
+                    $"Object schema at '{path}' must set additionalProperties to false.",
+                    "Output.JsonSchema.Schema"));
+            }
+            if (hasProperties)
             {
                 if (properties.ValueKind != JsonValueKind.Object)
                 {
@@ -145,15 +157,6 @@ namespace LLMAbstraction.Core.Validation
                         diagnostics.Add(Error(
                             "request.response_schema.all_properties_required",
                             $"Every object property must be listed in required for portable strict output. Missing at '{path}': {string.Join(", ", missing)}. Use a null union for optional values.",
-                            "Output.JsonSchema.Schema"));
-                    }
-
-                    if (!node.TryGetProperty("additionalProperties", out var additional) ||
-                        additional.ValueKind != JsonValueKind.False)
-                    {
-                        diagnostics.Add(Error(
-                            "request.response_schema.additional_properties",
-                            $"Object schema at '{path}' must set additionalProperties to false.",
                             "Output.JsonSchema.Schema"));
                     }
 

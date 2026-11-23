@@ -13,7 +13,8 @@ namespace LLMAbstraction.Core.Models
         FiveMinutes,
         ThirtyMinutes,
         OneHour,
-        TwentyFourHours
+        TwentyFourHours,
+        TwelveHours
     }
 
     /// <summary>

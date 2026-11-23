@@ -290,7 +290,9 @@ namespace LLMAbstraction.Providers.Gemini
                             {
                                 Name = toolName,
                                 Id = toolResult.ToolCallId,
-                                Response = ConvertToolResultOutput(toolResult.Output)
+                                Response = toolResult.IsError == true
+                                    ? new Dictionary<string, object> { ["error"] = toolResult.Output ?? string.Empty }
+                                    : ConvertToolResultOutput(toolResult.Output)
                             }
                         });
                         break;
@@ -642,6 +644,7 @@ namespace LLMAbstraction.Providers.Gemini
                     result.Add(new WebSource
                     {
                         Url = GetString(image, "sourceUri") ?? GetString(image, "uri"),
+                        ImageUrl = GetString(image, "imageUri"),
                         Title = GetString(image, "title"),
                         SourceType = "image"
                     });

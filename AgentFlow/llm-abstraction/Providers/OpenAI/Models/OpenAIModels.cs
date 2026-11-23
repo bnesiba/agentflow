@@ -47,8 +47,8 @@ namespace LLMAbstraction.Providers.OpenAI.Models
         [JsonPropertyName("reasoning")]
         public OpenAIReasoningConfig? Reasoning { get; set; }
 
-        [JsonPropertyName("user")]
-        public string? User { get; set; }
+        [JsonPropertyName("safety_identifier")]
+        public string? SafetyIdentifier { get; set; }
 
         [JsonPropertyName("metadata")]
         public Dictionary<string, string>? Metadata { get; set; }
