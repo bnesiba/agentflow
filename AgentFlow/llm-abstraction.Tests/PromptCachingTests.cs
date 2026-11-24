@@ -32,7 +32,7 @@ public sealed class PromptCachingTests
             Ttl = PromptCacheTtl.OneHour
         };
         request.InstructionsCache = new PromptCacheDirective { Ttl = PromptCacheTtl.OneHour };
-        request.Messages[0].Content[0].Cache = new PromptCacheDirective();
+        request.Messages[0].Content[0].Cache = new PromptCacheDirective { Ttl = PromptCacheTtl.OneHour };
         request.Tools = new ToolCollection
         {
             new FunctionTool
@@ -51,7 +51,7 @@ public sealed class PromptCachingTests
         Assert.Equal("1h", json["tools"]![0]!["cache_control"]!["ttl"]!.GetValue<string>());
         Assert.Equal("1h", json["system"]![0]!["cache_control"]!["ttl"]!.GetValue<string>());
         Assert.Equal("ephemeral", json["messages"]![0]!["content"]![0]!["cache_control"]!["type"]!.GetValue<string>());
-        Assert.Null(json["messages"]![0]!["content"]![0]!["cache_control"]!["ttl"]);
+        Assert.Equal("1h", json["messages"]![0]!["content"]![0]!["cache_control"]!["ttl"]!.GetValue<string>());
     }
 
     [Fact]
@@ -298,6 +298,37 @@ public sealed class PromptCachingTests
             Assert.Contains("cachedContent", geminiHandler.LastRequestBody);
             Assert.Equal(8, count.CachedTokens);
         }
+    }
+
+    [Theory]
+    [InlineData(PromptCacheTtl.ThirtyMinutes, PromptCacheTtl.TwelveHours, "30m", "12h")]
+    [InlineData(PromptCacheTtl.TwelveHours, PromptCacheTtl.ThirtyMinutes, "12h", "30m")]
+    public void OpenAIBreakpointCanOverrideRequestTtl(PromptCacheTtl requestTtl, PromptCacheTtl breakpointTtl,
+        string expectedDefault, string expectedOverride)
+    {
+        var request = Request("gpt-6-luna");
+        request.Cache = new() { Ttl = requestTtl };
+        request.Messages[0].Content[0].Cache = new() { Ttl = breakpointTtl };
+        var json = Serialize(new OpenAIConverter().ConvertRequest(request));
+        Assert.Equal(expectedDefault, json["prompt_cache_options"]!["ttl"]!.GetValue<string>());
+        Assert.Equal(expectedOverride, json["input"]![0]!["content"]![0]!["prompt_cache_breakpoint"]!["ttl"]!.GetValue<string>());
+        request.Model = "gpt-4o";
+        Assert.Throws<LLMRequestValidationException>(() => new OpenAIConverter().ConvertRequest(request));
+        request.Model = "gpt-6-luna";
+        request.Messages[0].Content[0].Cache = new() { Ttl = PromptCacheTtl.OneHour };
+        Assert.Throws<LLMRequestValidationException>(() => new OpenAIConverter().ConvertRequest(request));
+    }
+
+    [Theory]
+    [InlineData(null, PromptCacheTtl.OneHour)]
+    [InlineData(PromptCacheTtl.OneHour, null)]
+    public void ClaudeRejectsConflictingAutomaticAndFinalBreakpointTtls(PromptCacheTtl? automatic, PromptCacheTtl? final)
+    {
+        var request = Request("claude-haiku-5-5");
+        request.Cache = new() { Mode = PromptCacheMode.PreferReuse, Ttl = automatic };
+        request.Messages[0].Content[0].Cache = new() { Ttl = final };
+        var diagnostics = LLMRequestValidator.Validate(request, LLMProvider.Claude);
+        Assert.Contains(diagnostics, d => d.Code == "claude.cache.final_ttl_conflict" && d.Severity == RequestDiagnosticSeverity.Error);
     }
 
     private static UnifiedRequest Request(string model) => new()

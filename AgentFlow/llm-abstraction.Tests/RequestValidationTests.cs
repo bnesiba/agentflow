@@ -8,6 +8,24 @@ namespace LLMAbstraction.Tests;
 
 public sealed class RequestValidationTests
 {
+    [Theory]
+    [InlineData(LLMProvider.OpenAI)]
+    [InlineData(LLMProvider.Claude)]
+    [InlineData(LLMProvider.Gemini)]
+    public void RequiredToolChoiceNeedsAtLeastOneTool(LLMProvider provider)
+    {
+        var request = new UnifiedRequest
+        {
+            Model = "test-model", Messages = [new(MessageRole.User, "Search")],
+            ToolChoice = new() { Type = ToolChoiceType.Required }
+        };
+        Assert.Throws<LLMRequestValidationException>(() => LLMRequestValidator.ValidateAndThrow(request, provider));
+        request.Tools = [];
+        Assert.Throws<LLMRequestValidationException>(() => LLMRequestValidator.ValidateAndThrow(request, provider));
+        request.Tools.Add(ProviderTools.WebSearch());
+        LLMRequestValidator.ValidateAndThrow(request, provider);
+    }
+
     [Fact]
     public void CommonValidationReturnsStructuredDiagnostics()
     {

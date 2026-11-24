@@ -145,6 +145,17 @@ public sealed class WebSearchRequestTests
         Assert.StartsWith("2026-07-01T00:00:00", json["tools"]![0]!["googleSearch"]!["timeRangeFilter"]!["startTime"]!.GetValue<string>());
     }
 
+    [Theory]
+    [InlineData(WebSearchContentTypes.Image)]
+    [InlineData(WebSearchContentTypes.Web | WebSearchContentTypes.Image)]
+    public void ClaudeRejectsImageSearch(WebSearchContentTypes contentTypes)
+    {
+        var request = Request("claude-haiku-5-5", ProviderTools.WebSearch(new() { ContentTypes = contentTypes }));
+        Assert.Contains(LLMRequestValidator.Validate(request, LLMProvider.Claude),
+            diagnostic => diagnostic.Code == "claude.web_search.image_unsupported" &&
+                diagnostic.Severity == RequestDiagnosticSeverity.Error);
+    }
+
     [Fact]
     public void UnsupportedConstraintsAndInvalidCombinationsFailValidation()
     {

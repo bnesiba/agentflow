@@ -135,9 +135,7 @@ public sealed class CapabilityAndStructuredOutputTests
         Assert.DoesNotContain(diagnostics,
             diagnostic => diagnostic.Code == "request.reasoning.effort_unsupported");
 
-        var converted = new ClaudeConverter().ConvertRequest(request);
-        Assert.Equal("enabled", converted.Thinking!.Type);
-        Assert.Equal(1024, converted.Thinking.BudgetTokens);
+        Assert.Throws<LLMRequestValidationException>(() => new ClaudeConverter().ConvertRequest(request));
     }
 
     [Fact]
@@ -194,6 +192,57 @@ public sealed class CapabilityAndStructuredOutputTests
             diagnostic => diagnostic.Code == "request.reasoning.effort_unsupported" &&
                           diagnostic.Severity == RequestDiagnosticSeverity.Warning);
         Assert.Equal("MEDIUM", converted.GenerationConfig!.ThinkingConfig!.ThinkingLevel);
+    }
+
+    [Theory]
+    [InlineData("claude-haiku-5-5", ReasoningEffort.High, true)]
+    [InlineData("claude-haiku-5-5", ReasoningEffort.XHigh, false)]
+    [InlineData("claude-haiku-5-5-20261007", ReasoningEffort.Max, false)]
+    [InlineData("claude-opus-5", ReasoningEffort.Max, false)]
+    [InlineData("claude-opus-5-5", ReasoningEffort.Low, false)]
+    [InlineData("claude-sonnet-5-5", ReasoningEffort.Medium, false)]
+    [InlineData("claude-sonnet-5", ReasoningEffort.High, true)]
+    [InlineData("claude-future", ReasoningEffort.High, true)]
+    public void ClaudeDisabledThinkingFollowsModelAndEffort(string model, ReasoningEffort effort, bool allowed)
+    {
+        var request = Basic(model);
+        request.Reasoning = new() { Effort = effort, Anthropic = new() { Mode = AnthropicThinkingMode.Disabled } };
+        var converter = new ClaudeConverter();
+        if (allowed)
+            Assert.Equal("disabled", converter.ConvertRequest(request).Thinking!.Type);
+        else
+            Assert.Throws<LLMRequestValidationException>(() => converter.ConvertRequest(request));
+    }
+
+    [Fact]
+    public void GenerateContentPreservesDynamicAndDeprecatedBudgets()
+    {
+        var request = Basic("gemini-2.5-flash");
+        request.Reasoning = new() { Gemini = new() { ThinkingBudget = -1 } };
+        var converter = new GeminiConverter();
+        Assert.Equal(-1, converter.ConvertRequest(request).GenerationConfig!.ThinkingConfig!.ThinkingBudget);
+        request.Reasoning.Gemini.ThinkingBudget = -2;
+        Assert.Throws<LLMRequestValidationException>(() => converter.ConvertRequest(request));
+
+        request.Model = "gemini-4-hydrogen";
+        request.Reasoning.Gemini.ThinkingBudget = 512;
+        var diagnostics = LLMRequestValidator.Validate(request, LLMProvider.Gemini, LLMApiSurface.GeminiGenerateContent);
+        Assert.Contains(diagnostics, d => d.Code == "gemini.thinking.budget_deprecated" && d.Severity == RequestDiagnosticSeverity.Warning);
+        Assert.DoesNotContain(diagnostics, d => d.Code == "gemini.thinking.budget_unsupported");
+        Assert.Equal(512, converter.ConvertRequest(request).GenerationConfig!.ThinkingConfig!.ThinkingBudget);
+        request.Reasoning.Effort = ReasoningEffort.Low;
+        Assert.Throws<LLMRequestValidationException>(() => converter.ConvertRequest(request));
+    }
+
+    [Fact]
+    public void ObjectsWithoutPropertiesStillRequireClosure()
+    {
+        var schema = new JsonSchemaDefinition { Name = "result", Schema = new() { ["type"] = "object" } };
+        Assert.Contains(JsonSchemaAnalyzer.Analyze(schema), d => d.Code == "request.response_schema.additional_properties");
+        schema.Schema["additionalProperties"] = false;
+        Assert.Empty(JsonSchemaAnalyzer.Analyze(schema));
+        schema.Schema["$defs"] = new { child = new { type = new[] { "object", "null" } } };
+        Assert.Contains(JsonSchemaAnalyzer.Analyze(schema), d => d.Code == "request.response_schema.additional_properties");
     }
 
     [Fact]

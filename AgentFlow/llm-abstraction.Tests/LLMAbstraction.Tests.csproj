@@ -18,6 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="Live/Fixtures/*" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="..\llm-abstraction\LLMAbstraction.csproj" />
   </ItemGroup>
 

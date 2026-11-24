@@ -1,0 +1,10 @@
+<RunSettings>
+  <RunConfiguration>
+    <EnvironmentVariables>
+      <AGENTFLOW_LIVE>1</AGENTFLOW_LIVE>
+      <OPENAI_API_KEY></OPENAI_API_KEY>
+      <ANTHROPIC_API_KEY></ANTHROPIC_API_KEY>
+      <GEMINI_API_KEY></GEMINI_API_KEY>
+    </EnvironmentVariables>
+  </RunConfiguration>
+</RunSettings>
