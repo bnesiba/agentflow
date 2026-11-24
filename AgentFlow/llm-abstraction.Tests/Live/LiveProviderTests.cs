@@ -50,8 +50,8 @@ public partial class LiveProviderTests
         {
             Surface.OpenAI => "gpt-6-luna",
             Surface.Claude => "claude-haiku-5-5",
-            Surface.GeminiInteractions => "gemini-4-hydrogen",
-            Surface.GeminiGenerateContent => "gemini-4-hydrogen",
+            Surface.GeminiInteractions => "gemini-3.5-flash-lite",
+            Surface.GeminiGenerateContent => "gemini-3.5-flash-lite",
             _ => throw new ArgumentOutOfRangeException(nameof(surface), surface, "Unknown provider surface.")
         },
         Messages = [new(MessageRole.User, prompt)],

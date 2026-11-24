@@ -59,12 +59,13 @@ public partial class LiveProviderTests
                 new() { Ttl = TimeSpan.FromMinutes(5) });
             Assert.True(updated.ExpireTime > cached.ExpireTime);
 
-            var followUp = Request(surface, "What is the ticket code?");
+            var followUp = Request(surface, "Copy the complete ticket code exactly as written, including the hyphen and every digit. Reply with only the code.");
             followUp.Model = prefix.Model;
+            followUp.Parameters.MaxOutputTokens = 512;
             followUp.Cache = new() { Gemini = new() { CachedContentName = created.Name } };
             var response = await service.GenerateAsync(followUp);
-            Assert.Contains("FERN-712", Text(Assert.Single(response.Choices).Message));
             Assert.True(response.Usage.CacheReadTokens > 0);
+            Assert.Contains("FERN-712", Text(Assert.Single(response.Choices).Message));
         }
         finally
         {

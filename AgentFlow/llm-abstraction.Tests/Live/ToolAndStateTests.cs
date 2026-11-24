@@ -87,7 +87,7 @@ public partial class LiveProviderTests
     public async Task Hosted_search_returns_attributed_web_evidence(Surface surface)
     {
         var request = Request(surface, "Search the web for the latest NASA image of the day. Give its title and cite the source.");
-        request.Parameters.MaxOutputTokens = 512;
+        request.Parameters.MaxOutputTokens = surface == Surface.Claude ? 1536 : 512;
         request.Reasoning!.Effort = ReasoningEffort.Low;
         request.Tools = [ProviderTools.WebSearch(new()
         {
@@ -103,6 +103,6 @@ public partial class LiveProviderTests
         var choice = Assert.Single((await Service(surface).GenerateAsync(request)).Choices);
         Assert.Contains(choice.Message.Evidence.Sources, s => Uri.TryCreate(s.Uri, UriKind.Absolute, out _));
         Assert.Contains(choice.Message.Content, b => b is ProviderToolCallContent or ProviderToolResultContent);
-        Assert.False(string.IsNullOrWhiteSpace(Text(choice.Message)));
+        Assert.True(!string.IsNullOrWhiteSpace(Text(choice.Message)), $"Search returned no answer text (finish reason: {choice.FinishReason}).");
     }
 }

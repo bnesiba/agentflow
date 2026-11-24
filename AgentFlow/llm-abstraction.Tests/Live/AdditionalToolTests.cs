@@ -37,7 +37,14 @@ public partial class LiveProviderTests
     public async Task Image_search_returns_provider_attribution(Surface surface)
     {
         var request = Request(surface, "Use image search for a photo of the Eiffel Tower. Return one image result.");
-        request.Reasoning!.Effort = ReasoningEffort.Low;
+        if (surface is Surface.GeminiInteractions or Surface.GeminiGenerateContent)
+        {
+            request.Model = "gemini-nano-banana-2.1";
+            request.Messages[0] = new(MessageRole.User, "Use Google Image Search to find a reference photo of the Eiffel Tower and draw the tower using that reference.");
+            request.Reasoning = null;
+        }
+        else
+            request.Reasoning!.Effort = ReasoningEffort.Low;
         request.Parameters.MaxOutputTokens = 512;
         request.Tools = [ProviderTools.WebSearch(new()
         {

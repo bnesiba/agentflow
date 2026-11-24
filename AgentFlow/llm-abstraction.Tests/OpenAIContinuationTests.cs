@@ -15,10 +15,13 @@ public sealed class OpenAIContinuationTests
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    [Fact]
-    public void StatelessContinuationPreservesAndReplaysAllOutputItemsInOrder()
+    [Theory]
+    [InlineData("[]", null)]
+    [InlineData("[{\"type\":\"summary_text\",\"text\":\"   \"}]", null)]
+    [InlineData("[{\"type\":\"summary_text\",\"text\":\"I should call the tool.\"}]", "I should call the tool.")]
+    public void StatelessContinuationPreservesAndReplaysAllOutputItemsInOrder(string summaryJson, string? expectedSummary)
     {
-        const string responseJson = """
+        var responseJson = $$"""
         {
           "id": "resp_123",
           "model": "gpt-5.6",
@@ -29,7 +32,7 @@ public sealed class OpenAIContinuationTests
               "id": "rs_123",
               "type": "reasoning",
               "status": "completed",
-              "summary": [{ "type": "summary_text", "text": "I should call the tool." }],
+              "summary": {{summaryJson}},
               "encrypted_content": "opaque-encrypted-reasoning",
               "future_reasoning_field": { "enabled": true }
             },
@@ -62,6 +65,12 @@ public sealed class OpenAIContinuationTests
         var nativeResponse = JsonSerializer.Deserialize<OpenAIResponse>(responseJson, JsonOptions)!;
         var converter = new OpenAIConverter();
         var unified = converter.ConvertResponse(nativeResponse);
+
+        var summaries = Assert.Single(unified.Choices).Message.Content.OfType<ReasoningSummaryContent>();
+        if (expectedSummary is null)
+            Assert.Empty(summaries);
+        else
+            Assert.Equal(expectedSummary, Assert.Single(summaries).Text);
 
         Assert.Equal("resp_123", unified.Continuation!.ResponseId);
         Assert.Equal(ProviderIds.OpenAI, unified.Continuation.Provider);

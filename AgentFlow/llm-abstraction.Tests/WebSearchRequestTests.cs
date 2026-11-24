@@ -133,8 +133,8 @@ public sealed class WebSearchRequestTests
         {
             Gemini = new GeminiWebSearchOptions
             {
-                StartTime = DateTimeOffset.Parse("2026-07-01T00:00:00Z"),
-                EndTime = DateTimeOffset.Parse("2026-08-01T00:00:00Z")
+                StartTime = DateTimeOffset.Parse("2026-07-01T02:00:00.1234567+02:00"),
+                EndTime = DateTimeOffset.Parse("2026-08-01T00:00:00.9876543Z")
             }
         }));
 
@@ -142,7 +142,9 @@ public sealed class WebSearchRequestTests
 
         Assert.EndsWith(":generateContent", handler.LastRequest!.RequestUri!.AbsoluteUri);
         var json = JsonNode.Parse(handler.LastRequestBody!)!;
-        Assert.StartsWith("2026-07-01T00:00:00", json["tools"]![0]!["googleSearch"]!["timeRangeFilter"]!["startTime"]!.GetValue<string>());
+        var range = json["tools"]![0]!["googleSearch"]!["timeRangeFilter"]!;
+        Assert.Equal("2026-07-01T00:00:00Z", range["startTime"]!.GetValue<string>());
+        Assert.Equal("2026-08-01T00:00:00Z", range["endTime"]!.GetValue<string>());
     }
 
     [Theory]
@@ -192,8 +194,8 @@ public sealed class WebSearchRequestTests
         {
             Gemini = new GeminiWebSearchOptions
             {
-                StartTime = DateTimeOffset.Parse("2026-07-01T00:00:00Z"),
-                EndTime = DateTimeOffset.Parse("2026-08-01T00:00:00Z")
+                StartTime = DateTimeOffset.Parse("2026-07-01T02:00:00.1234567+02:00"),
+                EndTime = DateTimeOffset.Parse("2026-08-01T00:00:00.9876543Z")
             }
         }));
         forcedRange.ToolChoice = new ToolChoice { Type = ToolChoiceType.Required };

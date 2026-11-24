@@ -80,7 +80,8 @@ public partial class LiveProviderTests
     [InlineData(Surface.Claude)]
     public async Task Supplied_search_result_is_cited(Surface surface)
     {
-        var request = Request(surface, "Which gate? Cite the supplied search result.");
+        var request = Request(surface, "Give the departure gate code exactly as printed in the supplied schedule and cite it.");
+        request.Parameters.MaxOutputTokens = 512;
         request.Messages[0].Content.Insert(0, new SearchResultContent
         {
             Title = "Schedule", Source = "https://example.org/schedule", CitationsEnabled = true,

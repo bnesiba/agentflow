@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -374,8 +375,8 @@ namespace LLMAbstraction.Providers.Gemini
             {
                 timeRange = new GeminiTimeRangeFilter
                 {
-                    StartTime = native.StartTime.Value.ToUniversalTime().ToString("O"),
-                    EndTime = native.EndTime.Value.ToUniversalTime().ToString("O")
+                    StartTime = native.StartTime.Value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture),
+                    EndTime = native.EndTime.Value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
                 };
             }
 

@@ -129,13 +129,23 @@ namespace LLMAbstraction.Providers.OpenAI
                 switch (item.Type)
                 {
                     case "reasoning":
-                        message.Content.Add(new ReasoningSummaryContent
+                        if (item.ExtensionData?.TryGetValue("summary", out var summary) == true &&
+                            summary.ValueKind == JsonValueKind.Array)
                         {
-                            Text = item.ExtensionData?.TryGetValue("summary", out var summary) == true && summary.ValueKind == JsonValueKind.Array
-                                ? string.Join("\n", summary.EnumerateArray().Where(part => part.TryGetProperty("text", out _)).Select(part => part.GetProperty("text").GetString()))
-                                : string.Empty,
-                            NativeRepresentation = ProviderNativeRepresentation.Create(ProviderIds.OpenAI, JsonSerializer.SerializeToElement(item, NativeJsonOptions))
-                        });
+                            var parts = summary.EnumerateArray()
+                                .Where(part => part.ValueKind == JsonValueKind.Object && part.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
+                                .Select(part => part.GetProperty("text").GetString())
+                                .Where(text => !string.IsNullOrWhiteSpace(text));
+                            var summaryText = string.Join("\n", parts);
+                            if (summaryText.Length > 0)
+                            {
+                                message.Content.Add(new ReasoningSummaryContent
+                                {
+                                    Text = summaryText,
+                                    NativeRepresentation = ProviderNativeRepresentation.Create(ProviderIds.OpenAI, JsonSerializer.SerializeToElement(item, NativeJsonOptions))
+                                });
+                            }
+                        }
                         break;
                     case "message":
                         AddMessageContent(message, item);

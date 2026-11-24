@@ -14,3 +14,4 @@
 /AgentFlow/llm-abstraction/bin/Debug/net8.0
 /AgentFlow/llm-abstraction.Tests/bin/Debug/net8.0
 /AgentFlow/llm-abstraction.Tests/obj
+/AgentFlow/llm-abstraction.Tests/live.local.runsettings
