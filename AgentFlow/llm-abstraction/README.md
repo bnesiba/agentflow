@@ -341,7 +341,7 @@ Portable effort and summary intent work across providers where available. Non-eq
 - OpenAI: `OpenAIReasoningOptions` adds standard/pro mode, persisted context, and summary style.
 - Gemini: portable effort maps to `thinking_level`; `GeminiReasoningOptions.ThinkingBudget` is available only on the legacy `generateContent` surface.
 
-Gemini budget and level controls cannot be supplied together. Claude manual budgets and thinking/tool combinations must satisfy API constraints. Model-specific mismatches produce warnings and are still sent.
+Gemini accepts either a numeric budget or a thinking level. On Gemini 4 generateContent, a standalone budget produces a deprecation warning. Claude validation rejects documented manual and disabled thinking conflicts. Unknown model capabilities produce advisory diagnostics through `LLMRequestValidator.Validate`.
 
 ## Provider options
 
@@ -460,7 +460,7 @@ request.Messages[0].Content[^1].Cache = new PromptCacheDirective();
 ```
 
 - Anthropic maps `PreferReuse` to top-level automatic caching and supports cache directives on tools, instructions, and message content. Validation enforces its four-breakpoint limit, supported five-minute/one-hour TTLs, and long-before-short ordering.
-- OpenAI implicit caching needs no breakpoints. Newer Responses models can use explicit `prompt_cache_breakpoint` items plus typed cache key, mode, and 30-minute request TTL; legacy retention remains a typed OpenAI extension. Unsupported or unverified model combinations warn but still serialize.
+- OpenAI implicit caching needs no breakpoints. Newer Responses models support a 30-minute or 12-hour request TTL and an optional TTL override on each explicit input breakpoint. Legacy retention remains a typed OpenAI extension.
 - Gemini Interactions uses implicit caching only. A `cachedContent` resource reference automatically routes generation to `generateContent`, the surface that can represent it.
 
 Unknown model IDs are never blocked by a package model allowlist. Model-specific support is advisory; malformed TTLs, impossible field placement, and endpoint features that cannot be represented remain validation errors.
@@ -523,6 +523,8 @@ The raw response and parsed provider detail JSON remain available for diagnostic
 Unsupported input is rejected rather than silently omitted.
 
 ## Testing
+
+The optional live suite exercises each supported provider through its real API. It includes small media fixtures, provider-specific feature cases, and commands for running a single test before enabling the full suite. [Live test setup and coverage](../llm-abstraction.Tests/Live/README.md)
 
 The `LLMAbstraction.Tests` project contains deterministic contract tests for:
 
